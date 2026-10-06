@@ -375,19 +375,41 @@ UArenaBuildComponent::FTarget UArenaBuildComponent::ComputeTarget() const
 		break;
 	case EArenaBuildPiece::Stair:
 	{
-		// the ramp climbs the way you face; looking well down it goes under the edge in front and descends away from you
+		// the ramp climbs the way you face. Jumping while looking down (or facing a wall, boxed in) puts it under your own feet,
+		// the Fortnite way out of a box; looking well down on the ground it goes under the edge in front and descends away from you
 		int32 ClimbHeading = Heading;
 		int32 StairLevel = Level;
+		FIntPoint StairCell = Ahead;
+		const bool bFalling = Movement && Movement->IsFalling();
+		int32 AheadEdge = 1;
+		FIntVector AheadWall(Here.X, Here.Y, Level);
+		switch (Heading)
+		{
+		case 0: AheadEdge = 2; AheadWall.X += 1; break;
+		case 1: AheadEdge = 1; AheadWall.Y += 1; break;
+		case 2: AheadEdge = 2; break;
+		default: AheadEdge = 1; break;
+		}
+		const bool bWallAhead = IsSlotTaken(EArenaBuildPiece::Wall, AheadWall, AheadEdge);
 		if (bLookingUp)
 		{
 			StairLevel = Level + 1;
+		}
+		else if ((bFalling && Pitch < -20.0f) || (bLookingDown && bWallAhead))
+		{
+			StairCell = Here;
+			StairLevel = FeetLevel;
 		}
 		else if (bLookingDown)
 		{
 			StairLevel = FeetLevel - 1;
 			ClimbHeading = (Heading + 2) & 3;
 		}
-		Target.Cell = FIntVector(Ahead.X, Ahead.Y, StairLevel);
+		else if (bWallAhead)
+		{
+			StairCell = Here;
+		}
+		Target.Cell = FIntVector(StairCell.X, StairCell.Y, StairLevel);
 		Target.Rotation = (StairRotationFor(ClimbHeading) + UserRotation) & 3;
 		break;
 	}
