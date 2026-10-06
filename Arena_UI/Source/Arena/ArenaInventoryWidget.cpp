@@ -4,6 +4,7 @@
 #include "ArenaControls.h"
 #include "ArenaPlayerController.h"
 #include "ArenaGlassStyle.h"
+#include "ArenaUISounds.h"
 #include "Brushes/SlateRoundedBoxBrush.h"
 #include "FortnitePortingCharacterComponent.h"
 #include "FortnitePortingCosmeticData.h"
@@ -13,7 +14,7 @@
 #include "Styling/CoreStyle.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
-#include "Widgets/Images/SImage.h"
+#include "Widgets/Notifications/SProgressBar.h"
 #include "Widgets/Layout/SBackgroundBlur.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
@@ -25,18 +26,11 @@
 
 namespace
 {
-	const FLinearColor InventoryAccent(0.20f, 0.64f, 1.0f);
+	const FLinearColor InventoryAccent(0.55f, 0.80f, 1.0f);
 
 	FSlateFontInfo InventoryFont(int32 Size, bool bBold = false)
 	{
 		return FCoreStyle::GetDefaultFontStyle(bBold ? TEXT("Bold") : TEXT("Regular"), Size);
-	}
-
-	FButtonStyle MakeInventoryButtonStyle(const FLinearColor& Color)
-	{
-		FButtonStyle Style = ArenaGlass::ButtonStyle(0.30f, 12.0f, 0.55f, Color);
-		Style.SetPressedPadding(FMargin(0));
-		return Style;
 	}
 
 	class FArenaInventoryWeaponDragDropOp : public FGameDragDropOperation
@@ -61,9 +55,9 @@ namespace
 
 		void Begin()
 		{
-			NormalBrush = MakeShared<FSlateRoundedBoxBrush>(FLinearColor(0.05f, 0.08f, 0.16f, 0.82f), 11.0f, FLinearColor(1.0f, 1.0f, 1.0f, 0.22f), 1.0f);
-			HoverBrush = MakeShared<FSlateRoundedBoxBrush>(FLinearColor(0.10f, 0.16f, 0.28f, 0.88f), 11.0f, FLinearColor(0.80f, 0.92f, 1.0f, 0.70f), 1.4f);
-			SelectedBrush = MakeShared<FSlateRoundedBoxBrush>(FLinearColor(0.15f, 0.45f, 0.75f, 0.70f), 11.0f, FLinearColor(0.55f, 0.85f, 1.0f, 0.95f), 1.6f);
+			NormalBrush = MakeShared<FSlateRoundedBoxBrush>(FLinearColor(0.06f, 0.09f, 0.18f, 0.88f), 14.0f, FLinearColor(1.0f, 1.0f, 1.0f, 0.30f), 1.2f);
+			HoverBrush = MakeShared<FSlateRoundedBoxBrush>(FLinearColor(0.10f, 0.16f, 0.30f, 0.92f), 14.0f, FLinearColor(0.80f, 0.92f, 1.0f, 0.90f), 1.6f);
+			SelectedBrush = MakeShared<FSlateRoundedBoxBrush>(FLinearColor(0.15f, 0.42f, 0.75f, 0.80f), 14.0f, FLinearColor(0.60f, 0.88f, 1.0f, 1.0f), 2.0f);
 			CardStyle.SetNormal(bWasSelected ? *SelectedBrush : *NormalBrush);
 			CardStyle.SetHovered(bWasSelected ? *SelectedBrush : *HoverBrush);
 			CardStyle.SetPressed(bWasSelected ? *SelectedBrush : *NormalBrush);
@@ -97,7 +91,7 @@ namespace
 				.ContentPadding(FMargin(8.0f))
 				.IsFocusable(false)
 				[
-					SNew(SBox).WidthOverride(CardWidth).HeightOverride(92.0f)
+					SNew(SBox).WidthOverride(FMath::Max(CardWidth - 16.0f, 0.0f)).HeightOverride(80.0f)
 					[
 						SNew(SOverlay)
 						+ SOverlay::Slot().HAlign(HAlign_Center).VAlign(VAlign_Center).Padding(5.0f, 4.0f, 5.0f, 17.0f)
@@ -112,7 +106,7 @@ namespace
 						]
 						+ SOverlay::Slot().HAlign(HAlign_Right).VAlign(VAlign_Top).Padding(0.0f, 1.0f, 0.0f, 0.0f)
 						[
-							SNew(STextBlock).Text(FText::FromString(bWasEquipped ? TEXT("EQUIPADA") : TEXT(""))).Font(InventoryFont(7, true)).ColorAndOpacity(FLinearColor(0.55f, 0.86f, 1.0f))
+							SNew(STextBlock).Text(FText::FromString(bWasEquipped ? TEXT("EN MANO") : TEXT(""))).Font(InventoryFont(7, true)).ColorAndOpacity(ArenaGlass::Mint)
 						]
 					]
 				];
@@ -133,7 +127,7 @@ namespace
 			[
 				SNew(SBorder)
 				.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
-				.BorderBackgroundColor(FLinearColor(0.0f, 0.0f, 0.0f, 0.68f))
+				.BorderBackgroundColor(FLinearColor(0.015f, 0.022f, 0.06f, 0.42f))
 			];
 		}
 
@@ -163,6 +157,19 @@ namespace
 	};
 }
 
+namespace ArenaInventoryLayout
+{
+	constexpr int32 Columns = 5;
+	constexpr int32 MinSlots = 10;
+	constexpr float PanelWidth = 540.0f;
+	constexpr float PanelRadius = 26.0f;
+	constexpr float CardRadius = 14.0f;
+	constexpr float CardHeight = 96.0f;
+	constexpr float RevealSeconds = 0.38f;
+}
+
+// The inventory, docked on the right as a tall liquid glass panel: the weapon in hand with its magazine, the weapon grid
+// (drag to reorder, drop outside the panel to throw it), the stats of the selected weapon and the building materials.
 class SArenaInventorySlate : public SCompoundWidget
 {
 public:
@@ -172,23 +179,40 @@ public:
 
 	void Construct(const FArguments& InArgs)
 	{
+		using namespace ArenaInventoryLayout;
 		Owner = InArgs._Owner;
-		// Liquid glass: a dark translucent surface over the blur of the match, a bright rim and a sheen along the top
-		PanelBrush = MakeShared<FSlateRoundedBoxBrush>(FLinearColor(0.03f, 0.05f, 0.11f, 0.62f), 20.0f, FLinearColor(1.0f, 1.0f, 1.0f, 0.40f), 1.3f);
-		PanelSheen = ArenaGlass::Sheen(20.0f, 0.12f);
-		SectionBrush = MakeShared<FSlateRoundedBoxBrush>(FLinearColor(1.0f, 1.0f, 1.0f, 0.05f), 13.0f, FLinearColor(1.0f, 1.0f, 1.0f, 0.12f), 1.0f);
-		SlotBrush = MakeShared<FSlateRoundedBoxBrush>(FLinearColor(0.05f, 0.08f, 0.16f, 0.82f), 11.0f, FLinearColor(1.0f, 1.0f, 1.0f, 0.22f), 1.0f);
-		SelectedSlotBrush = MakeShared<FSlateRoundedBoxBrush>(FLinearColor(0.15f, 0.45f, 0.75f, 0.70f), 11.0f, FLinearColor(0.55f, 0.85f, 1.0f, 0.95f), 1.6f);
-		PrimaryButtonStyle = MakeInventoryButtonStyle(InventoryAccent);
-		SecondaryButtonStyle = MakeInventoryButtonStyle(FLinearColor(0.5f, 0.6f, 0.75f));
-		SelectedSlotStyle.SetNormal(*SelectedSlotBrush);
-		SelectedSlotStyle.SetHovered(*SelectedSlotBrush);
-		SelectedSlotStyle.SetPressed(*SelectedSlotBrush);
-		EmptyButtonStyle.SetNormal(*SlotBrush);
-		EmptyButtonStyle.SetHovered(FSlateRoundedBoxBrush(FLinearColor(0.10f, 0.16f, 0.28f, 0.88f), 11.0f, FLinearColor(0.80f, 0.92f, 1.0f, 0.70f), 1.4f));
-		EmptyButtonStyle.SetPressed(*SlotBrush);
-		EmptyButtonStyle.SetNormalPadding(FMargin(0));
-		EmptyButtonStyle.SetPressedPadding(FMargin(0));
+		PanelSheen = ArenaGlass::Sheen(PanelRadius, 0.12f);
+		CardSheen = ArenaGlass::Sheen(CardRadius, 0.10f);
+
+		auto Rounded = [](const FLinearColor& Fill, float Radius, const FLinearColor& Rim, float Width)
+		{
+			return FSlateRoundedBoxBrush(Fill, Radius, Rim, Width);
+		};
+		EmptyButtonStyle.SetNormal(Rounded(FLinearColor(1.0f, 1.0f, 1.0f, 0.035f), CardRadius, FLinearColor(1.0f, 1.0f, 1.0f, 0.10f), 1.0f));
+		EmptyButtonStyle.SetHovered(Rounded(FLinearColor(1.0f, 1.0f, 1.0f, 0.08f), CardRadius, FLinearColor(0.80f, 0.92f, 1.0f, 0.50f), 1.2f));
+		EmptyButtonStyle.SetPressed(EmptyButtonStyle.Normal);
+		CardButtonStyle.SetNormal(Rounded(FLinearColor(0.06f, 0.09f, 0.18f, 0.72f), CardRadius, FLinearColor(1.0f, 1.0f, 1.0f, 0.20f), 1.0f));
+		CardButtonStyle.SetHovered(Rounded(FLinearColor(0.10f, 0.16f, 0.30f, 0.85f), CardRadius, FLinearColor(0.80f, 0.92f, 1.0f, 0.85f), 1.5f));
+		CardButtonStyle.SetPressed(Rounded(FLinearColor(0.05f, 0.08f, 0.15f, 0.85f), CardRadius, FLinearColor(0.80f, 0.92f, 1.0f, 0.85f), 1.5f));
+		EquippedSlotStyle = CardButtonStyle;
+		EquippedSlotStyle.SetNormal(Rounded(FLinearColor(0.05f, 0.20f, 0.22f, 0.70f), CardRadius, FLinearColor(0.37f, 0.92f, 0.83f, 0.80f), 1.4f));
+		const FSlateRoundedBoxBrush Selected = Rounded(FLinearColor(0.15f, 0.42f, 0.75f, 0.55f), CardRadius, FLinearColor(0.60f, 0.88f, 1.0f, 1.0f), 2.0f);
+		SelectedSlotStyle.SetNormal(Selected);
+		SelectedSlotStyle.SetHovered(Selected);
+		SelectedSlotStyle.SetPressed(Selected);
+		for (FButtonStyle* Style : { &EmptyButtonStyle, &CardButtonStyle, &EquippedSlotStyle, &SelectedSlotStyle })
+		{
+			Style->SetNormalPadding(FMargin(0));
+			Style->SetPressedPadding(FMargin(0));
+		}
+		PrimaryButtonStyle = ArenaGlass::ButtonStyle(0.34f, 14.0f, 0.75f, ArenaGlass::Ice);
+		DangerButtonStyle = ArenaGlass::ButtonStyle(0.24f, 14.0f, 0.60f, ArenaGlass::Coral);
+		CloseButtonStyle = ArenaGlass::ButtonStyle(0.10f, 18.0f, 0.35f);
+
+		BarStyle = FProgressBarStyle()
+			.SetBackgroundImage(FSlateRoundedBoxBrush(FLinearColor(1.0f, 1.0f, 1.0f, 0.10f), 3.0f))
+			.SetFillImage(FSlateRoundedBoxBrush(FLinearColor::White, 3.0f))
+			.SetMarqueeImage(FSlateRoundedBoxBrush(FLinearColor::White, 3.0f));
 		MaterialNames = { TEXT("Madera"), TEXT("Piedra"), TEXT("Metal") };
 
 		if (UArenaInventoryWidget* InventoryWidget = Owner.Get())
@@ -206,169 +230,82 @@ public:
 			}
 		}
 
-		TWeakPtr<SArenaInventorySlate> WeakThis = SharedThis(this);
+		const float BlurCorner = ArenaGlass::BlurCorner(PanelRadius);
 		ChildSlot
 		[
 			SNew(SOverlay)
+			// Dim + soft blue light behind the panel; dropping a weapon anywhere here throws it to the ground
 			+ SOverlay::Slot()
 			[
-				SNew(SArenaInventoryGroundDropTarget).Owner(Owner)
+				SAssignNew(Backdrop, SOverlay)
+				+ SOverlay::Slot()
+				[
+					SNew(SArenaInventoryGroundDropTarget).Owner(Owner)
+				]
+				+ SOverlay::Slot().HAlign(HAlign_Right).VAlign(VAlign_Center).Padding(FMargin(0.0f, 0.0f, -460.0f, 0.0f))
+				[
+					SNew(SBox).WidthOverride(1150.0f).HeightOverride(1150.0f).Visibility(EVisibility::HitTestInvisible)
+					[
+						SNew(SImage).Image(&LightBrush).ColorAndOpacity(FLinearColor(0.20f, 0.45f, 1.0f, 0.22f))
+					]
+				]
 			]
-			+ SOverlay::Slot().HAlign(HAlign_Center).VAlign(VAlign_Center).Padding(20.0f)
+			+ SOverlay::Slot().HAlign(HAlign_Right).VAlign(VAlign_Fill).Padding(FMargin(0.0f, 36.0f, 36.0f, 36.0f))
 			[
-				SNew(SOverlay)
-				+ SOverlay::Slot()
+				SAssignNew(PanelRoot, SBox).WidthOverride(PanelWidth)
 				[
-					SNew(SBackgroundBlur).BlurStrength(32.0f).bApplyAlphaToBlur(false).Padding(FMargin(0.0f)).Visibility(EVisibility::HitTestInvisible)
-					.CornerRadius(FVector4(ArenaGlass::BlurCorner(20.0f), ArenaGlass::BlurCorner(20.0f), ArenaGlass::BlurCorner(20.0f), ArenaGlass::BlurCorner(20.0f)))
+					SNew(SOverlay)
+					+ SOverlay::Slot()
 					[
-						SNew(SImage).Image(&PanelSheen)
+						SNew(SBackgroundBlur).BlurStrength(34.0f).bApplyAlphaToBlur(false).Padding(FMargin(0.0f)).Visibility(EVisibility::HitTestInvisible)
+						.CornerRadius(FVector4(BlurCorner, BlurCorner, BlurCorner, BlurCorner))
+						[
+							SNew(SImage).Image(&PanelSheen)
+						]
 					]
-				]
-				+ SOverlay::Slot()
-				[
-				SNew(SBox).WidthOverride(680.0f).MaxDesiredHeight(790.0f)
-				[
-					SNew(SBorder)
-					.BorderImage(PanelBrush.Get())
-					.Padding(FMargin(24.0f, 20.0f))
+					+ SOverlay::Slot()
 					[
-						SNew(SVerticalBox)
-						+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 14.0f)
+						SNew(SBorder).BorderImage(&PanelBrush).Padding(FMargin(24.0f, 22.0f))
 						[
-							SNew(SHorizontalBox)
-							+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center)
+							SNew(SVerticalBox)
+							+ SVerticalBox::Slot().AutoHeight()
 							[
-								SNew(SVerticalBox)
-								+ SVerticalBox::Slot().AutoHeight()
-								[
-									SNew(STextBlock).Text(FText::FromString(TEXT("INVENTARIO"))).Font(InventoryFont(19, true)).ColorAndOpacity(FLinearColor::White)
-								]
-								+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 3.0f, 0.0f, 0.0f)
-								[
-									SNew(STextBlock).Text(FText::FromString(TEXT("Recursos y equipo"))).Font(InventoryFont(11)).ColorAndOpacity(FLinearColor(0.62f, 0.69f, 0.79f))
-								]
+								MakeHeader()
 							]
-							+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+							+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 16.0f, 0.0f, 0.0f)
 							[
-								SNew(SButton)
-								.ButtonStyle(&SecondaryButtonStyle)
-								.OnClicked_Lambda([WeakThis]()
-								{
-									if (TSharedPtr<SArenaInventorySlate> Pinned = WeakThis.Pin())
-									{
-										if (UArenaInventoryWidget* InventoryWidget = Pinned->Owner.Get())
-										{
-											InventoryWidget->Close();
-										}
-									}
-									return FReply::Handled();
-								})
+								MakeHeroCard()
+							]
+							+ SVerticalBox::Slot().FillHeight(1.0f).Padding(0.0f, 14.0f, 0.0f, 0.0f)
+							[
+								SNew(SScrollBox).ScrollBarVisibility(EVisibility::Collapsed)
+								+ SScrollBox::Slot().Padding(0.0f, 0.0f, 0.0f, 12.0f)
 								[
-									SNew(STextBlock).Text(FText::FromString(TEXT("CERRAR  [Esc / Tab]"))).Font(InventoryFont(10, true)).ColorAndOpacity(FLinearColor::White)
+									MakeWeaponsSection()
+								]
+								+ SScrollBox::Slot().Padding(0.0f, 0.0f, 0.0f, 12.0f)
+								[
+									MakeDetailsSection()
+								]
+								+ SScrollBox::Slot()
+								[
+									MakeMaterialsSection()
 								]
 							]
-						]
-						+ SVerticalBox::Slot().FillHeight(1.0f)
-						[
-							SNew(SScrollBox).ScrollBarVisibility(EVisibility::Collapsed)
-							+ SScrollBox::Slot().Padding(0.0f, 0.0f, 0.0f, 12.0f)
+							+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 14.0f, 0.0f, 0.0f)
 							[
-								MakeMaterialsSection()
-							]
-							+ SScrollBox::Slot().Padding(0.0f, 0.0f, 0.0f, 12.0f)
-							[
-								MakeAmmoSection()
-							]
-							+ SScrollBox::Slot().Padding(0.0f, 0.0f, 0.0f, 12.0f)
-							[
-								MakeWeaponsSection()
-							]
-							+ SScrollBox::Slot()
-							[
-								MakeDetailsSection()
-							]
-						]
-						+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 13.0f, 0.0f, 0.0f)
-						[
-							SNew(SHorizontalBox)
-							+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(0.0f, 0.0f, 6.0f, 0.0f)
-							[
-								SNew(SButton)
-								.ButtonStyle(&PrimaryButtonStyle)
-								.IsEnabled_Lambda([WeakThis]()
-								{
-									if (TSharedPtr<SArenaInventorySlate> Pinned = WeakThis.Pin())
-									{
-										if (UArenaInventoryWidget* InventoryWidget = Pinned->Owner.Get())
-										{
-											const UFortnitePortingCharacterComponent* Component = InventoryWidget->Inventory.Get();
-											return Component
-												&& IsValid(InventoryWidget->SelectedWeapon)
-												&& Component->Weapons.Contains(InventoryWidget->SelectedWeapon)
-												&& Component->GetCurrentWeapon() != InventoryWidget->SelectedWeapon;
-										}
-									}
-									return false;
-								})
-								.OnClicked_Lambda([WeakThis]()
-								{
-									if (TSharedPtr<SArenaInventorySlate> Pinned = WeakThis.Pin())
-									{
-										if (UArenaInventoryWidget* InventoryWidget = Pinned->Owner.Get())
-										{
-											InventoryWidget->EquipSelectedWeapon();
-										}
-									}
-									return FReply::Handled();
-								})
-								[
-									SNew(STextBlock).Text(FText::FromString(TEXT("EQUIPAR"))).Font(InventoryFont(11, true)).ColorAndOpacity(FLinearColor::White).Justification(ETextJustify::Center)
-								]
-							]
-							+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(6.0f, 0.0f, 0.0f, 0.0f)
-							[
-								SNew(SButton)
-								.ButtonStyle(&SecondaryButtonStyle)
-								.IsEnabled_Lambda([WeakThis]()
-								{
-									if (TSharedPtr<SArenaInventorySlate> Pinned = WeakThis.Pin())
-									{
-										if (UArenaInventoryWidget* InventoryWidget = Pinned->Owner.Get())
-										{
-											const UFortnitePortingCharacterComponent* Component = InventoryWidget->Inventory.Get();
-											return Component
-												&& IsValid(InventoryWidget->SelectedWeapon)
-												&& Component->Weapons.Contains(InventoryWidget->SelectedWeapon);
-										}
-									}
-									return false;
-								})
-								.OnClicked_Lambda([WeakThis]()
-								{
-									if (TSharedPtr<SArenaInventorySlate> Pinned = WeakThis.Pin())
-									{
-										if (UArenaInventoryWidget* InventoryWidget = Pinned->Owner.Get())
-										{
-											InventoryWidget->DropWeapon(InventoryWidget->SelectedWeapon);
-										}
-									}
-									return FReply::Handled();
-								})
-								[
-									SNew(STextBlock).Text(FText::FromString(TEXT("SOLTAR AL SUELO"))).Font(InventoryFont(11, true)).ColorAndOpacity(FLinearColor::White).Justification(ETextJustify::Center)
-								]
+								MakeFooter()
 							]
 						]
 					]
-				]
-				]
-				+ SOverlay::Slot()
-				[
-					SNew(SImage).Image(&PanelEdge).Visibility(EVisibility::HitTestInvisible)
+					+ SOverlay::Slot()
+					[
+						SNew(SImage).Image(&PanelEdge).Visibility(EVisibility::HitTestInvisible)
+					]
 				]
 			]
 		];
+		ApplyReveal();
 		Refresh();
 	}
 
@@ -410,49 +347,21 @@ public:
 
 		WeaponsGrid->ClearChildren();
 		const TArray<TObjectPtr<UFortnitePortingWeaponData>>& Weapons = Owner->DisplayWeapons;
-		const int32 SlotCount = FMath::Max(10, Weapons.Num());
-		constexpr int32 Columns = 5;
+		const int32 SlotCount = FMath::Max(ArenaInventoryLayout::MinSlots, Weapons.Num());
 		for (int32 Index = 0; Index < SlotCount; ++Index)
 		{
 			UFortnitePortingWeaponData* Weapon = Weapons.IsValidIndex(Index) ? Weapons[Index] : nullptr;
-			const int32 Row = Index / Columns;
-			const int32 Column = Index % Columns;
+			const int32 Row = Index / ArenaInventoryLayout::Columns;
+			const int32 Column = Index % ArenaInventoryLayout::Columns;
 			if (IsValid(Weapon))
 			{
-				const FString WeaponId = Owner->GetWeaponId(Weapon);
-				if (TSharedPtr<SWidget>* ExistingWidget = ExistingWidgets.Find(WeaponId))
+				if (TSharedPtr<SWidget>* ExistingWidget = ExistingWidgets.Find(Owner->GetWeaponId(Weapon)))
 				{
 					WeaponsGrid->AddSlot(Column, Row)[ExistingWidget->ToSharedRef()];
 					continue;
 				}
 			}
-
-			const TWeakPtr<SArenaInventorySlate> WeakThis = SharedThis(this);
-			WeaponsGrid->AddSlot(Column, Row)
-			[
-				SNew(SButton)
-				.ButtonStyle(&EmptyButtonStyle)
-				.ContentPadding(FMargin(4.0f))
-				.OnSlateButtonDrop_Lambda([WeakThis, Index](const FGeometry&, const FDragDropEvent& Event)
-				{
-					const TSharedPtr<FArenaInventoryWeaponDragDropOp> Operation = Event.GetOperationAs<FArenaInventoryWeaponDragDropOp>();
-					if (Operation.IsValid())
-					{
-						if (TSharedPtr<SArenaInventorySlate> Pinned = WeakThis.Pin())
-						{
-							if (UArenaInventoryWidget* InventoryWidget = Pinned->Owner.Get())
-							{
-								InventoryWidget->MoveWeaponToIndex(Operation->WeaponId, Index);
-							}
-						}
-						return FReply::Handled();
-					}
-					return FReply::Unhandled();
-				})
-				[
-					SNew(SBox).HeightOverride(90.0f)
-				]
-			];
+			WeaponsGrid->AddSlot(Column, Row)[MakeEmptySlot(Index)];
 		}
 
 		SlotAnimations.Reset();
@@ -480,6 +389,12 @@ private:
 	virtual void Tick(const FGeometry& AllottedGeometry, const double CurrentTime, const float DeltaTime) override
 	{
 		SCompoundWidget::Tick(AllottedGeometry, CurrentTime, DeltaTime);
+		if (Reveal < 1.0f)
+		{
+			Reveal = FMath::Min(Reveal + DeltaTime / ArenaInventoryLayout::RevealSeconds, 1.0f);
+			ApplyReveal();
+		}
+
 		constexpr float AnimationDuration = 0.18f;
 		for (auto It = SlotAnimations.CreateIterator(); It; ++It)
 		{
@@ -524,27 +439,211 @@ private:
 		}
 	}
 
+	void ApplyReveal()
+	{
+		// Ease out: the dim fades in while the panel slides in from the right edge
+		const float Eased = 1.0f - FMath::Pow(1.0f - Reveal, 3.0f);
+		if (Backdrop.IsValid())
+		{
+			Backdrop->SetRenderOpacity(Eased);
+		}
+		if (PanelRoot.IsValid())
+		{
+			PanelRoot->SetRenderOpacity(Eased);
+			PanelRoot->SetRenderTransform(TOptional<FSlateRenderTransform>(FSlateRenderTransform(FVector2f(90.0f * (1.0f - Eased), 0.0f))));
+		}
+	}
+
+	void PlayHover() const
+	{
+		if (const UArenaInventoryWidget* InventoryWidget = Owner.Get())
+		{
+			ArenaUISounds::PlayHover(InventoryWidget);
+		}
+	}
+
+	TSharedRef<SWidget> MakeBar(TAttribute<TOptional<float>> Percent, const FLinearColor& Color)
+	{
+		return SNew(SBox).HeightOverride(6.0f)
+		[
+			SNew(SProgressBar).Style(&BarStyle).Percent(Percent).FillColorAndOpacity(Color).BarFillType(EProgressBarFillType::LeftToRight)
+		];
+	}
+
+	TSharedRef<SWidget> MakeDot(const FLinearColor& Color, float Size)
+	{
+		return SNew(SBox).WidthOverride(Size).HeightOverride(Size)
+		[
+			SNew(SImage).Image(&DotBrush).ColorAndOpacity(Color)
+		];
+	}
+
 	TSharedRef<SWidget> MakeSectionHeading(const TCHAR* Title, const TCHAR* Subtitle)
 	{
 		return SNew(SVerticalBox)
 			+ SVerticalBox::Slot().AutoHeight()
 			[
-				SNew(STextBlock).Text(FText::FromString(Title)).Font(InventoryFont(12, true)).ColorAndOpacity(FLinearColor(0.86f, 0.91f, 0.98f))
+				SNew(STextBlock).Text(FText::FromString(Title)).Font(InventoryFont(12, true)).ColorAndOpacity(ArenaGlass::Ink)
 			]
-			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 3.0f, 0.0f, 10.0f)
+			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 2.0f, 0.0f, 10.0f)
 			[
-				SNew(STextBlock).Text(FText::FromString(Subtitle)).Font(InventoryFont(9)).ColorAndOpacity(FLinearColor(0.53f, 0.61f, 0.72f))
+				SNew(STextBlock).Text(FText::FromString(Subtitle)).Font(InventoryFont(9)).ColorAndOpacity(ArenaGlass::Dim)
 			];
 	}
 
-	TSharedRef<SWidget> MakeMaterialsSection()
+	TSharedRef<SWidget> MakeHeader()
 	{
-		return SNew(SBorder).BorderImage(SectionBrush.Get()).Padding(FMargin(14.0f, 12.0f))
+		TWeakPtr<SArenaInventorySlate> WeakThis = SharedThis(this);
+		return SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center)
+			[
+				SNew(SVerticalBox)
+				+ SVerticalBox::Slot().AutoHeight()
+				[
+					SNew(STextBlock).Text(FText::FromString(TEXT("EQUIPO"))).Font(InventoryFont(10, true)).ColorAndOpacity(ArenaGlass::Mint)
+				]
+				+ SVerticalBox::Slot().AutoHeight()
+				[
+					SNew(STextBlock).Text(FText::FromString(TEXT("INVENTARIO"))).Font(InventoryFont(26, true)).ColorAndOpacity(ArenaGlass::Ink)
+					.ShadowOffset(FVector2D(0.0f, 2.0f)).ShadowColorAndOpacity(FLinearColor(0.0f, 0.0f, 0.05f, 0.5f))
+				]
+			]
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0.0f, 0.0f, 10.0f, 0.0f)
+			[
+				SNew(SBorder).BorderImage(&PillBrush).Padding(FMargin(12.0f, 6.0f))
+				[
+					SAssignNew(CountText, STextBlock).Font(InventoryFont(11, true)).ColorAndOpacity(ArenaGlass::Ink)
+				]
+			]
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+			[
+				SNew(SBox).WidthOverride(40.0f).HeightOverride(40.0f)
+				[
+					SNew(SButton)
+					.ButtonStyle(&CloseButtonStyle)
+					.HAlign(HAlign_Center).VAlign(VAlign_Center)
+					.ToolTipText(FText::FromString(TEXT("Cerrar  [Esc / Tab]")))
+					.OnHovered_Lambda([WeakThis]() { if (TSharedPtr<SArenaInventorySlate> Pinned = WeakThis.Pin()) { Pinned->PlayHover(); } })
+					.OnClicked_Lambda([WeakThis]()
+					{
+						if (TSharedPtr<SArenaInventorySlate> Pinned = WeakThis.Pin())
+						{
+							if (UArenaInventoryWidget* InventoryWidget = Pinned->Owner.Get())
+							{
+								InventoryWidget->Close();
+							}
+						}
+						return FReply::Handled();
+					})
+					[
+						SNew(STextBlock).Text(FText::FromString(TEXT("X"))).Font(InventoryFont(13, true)).ColorAndOpacity(ArenaGlass::Ink)
+					]
+				]
+			];
+	}
+
+	TSharedRef<SWidget> MakeHeroCard()
+	{
+		return SNew(SBorder).BorderImage(&HeroBrush).Padding(FMargin(16.0f, 14.0f))
 		[
 			SNew(SVerticalBox)
 			+ SVerticalBox::Slot().AutoHeight()
 			[
-				MakeSectionHeading(TEXT("MATERIALES"), TEXT("El modo de construcción actual no consume recursos."))
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+				[
+					SNew(SBox).WidthOverride(76.0f).HeightOverride(76.0f)
+					[
+						SNew(SBorder).BorderImage(&ChipBrush).Padding(FMargin(8.0f)).HAlign(HAlign_Center).VAlign(VAlign_Center)
+						[
+							SAssignNew(HeroIcon, SImage)
+						]
+					]
+				]
+				+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center).Padding(14.0f, 0.0f, 10.0f, 0.0f)
+				[
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot().AutoHeight()
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0.0f, 0.0f, 6.0f, 0.0f)
+						[
+							MakeDot(ArenaGlass::Mint, 7.0f)
+						]
+						+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+						[
+							SNew(STextBlock).Text(FText::FromString(TEXT("EN MANO"))).Font(InventoryFont(9, true)).ColorAndOpacity(ArenaGlass::Mint)
+						]
+					]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 3.0f, 0.0f, 0.0f)
+					[
+						SAssignNew(HeroNameText, STextBlock).Font(InventoryFont(16, true)).ColorAndOpacity(ArenaGlass::Ink)
+					]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 2.0f, 0.0f, 0.0f)
+					[
+						SAssignNew(AmmoDescriptionText, STextBlock).Font(InventoryFont(10)).ColorAndOpacity(ArenaGlass::Dim)
+					]
+				]
+				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+				[
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Right)
+					[
+						SAssignNew(AmmoCountText, STextBlock).Font(InventoryFont(24, true)).ColorAndOpacity(ArenaGlass::Ink)
+					]
+					+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Right)
+					[
+						SNew(STextBlock).Text(FText::FromString(TEXT("MUNICIÓN"))).Font(InventoryFont(8, true)).ColorAndOpacity(ArenaGlass::Dim)
+					]
+				]
+			]
+			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 12.0f, 0.0f, 0.0f)
+			[
+				MakeBar(TAttribute<TOptional<float>>::CreateLambda([this]() { return TOptional<float>(AmmoPercent); }), ArenaGlass::Ice)
+			]
+		];
+	}
+
+	TSharedRef<SWidget> MakeWeaponsSection()
+	{
+		return SNew(SBorder).BorderImage(&SectionBrush).Padding(FMargin(14.0f, 12.0f))
+		[
+			SNew(SVerticalBox)
+			+ SVerticalBox::Slot().AutoHeight()
+			[
+				MakeSectionHeading(TEXT("ARMAS"), TEXT("Arrastra para ordenar · suéltala fuera del panel para tirarla"))
+			]
+			+ SVerticalBox::Slot().AutoHeight()
+			[
+				SAssignNew(WeaponsGrid, SUniformGridPanel).SlotPadding(FMargin(4.0f))
+			]
+		];
+	}
+
+	TSharedRef<SWidget> MakeDetailsSection()
+	{
+		return SNew(SBorder).BorderImage(&SectionBrush).Padding(FMargin(14.0f, 12.0f))
+		[
+			SNew(SVerticalBox)
+			+ SVerticalBox::Slot().AutoHeight()
+			[
+				MakeSectionHeading(TEXT("DETALLES"), TEXT("Estadísticas del arma seleccionada"))
+			]
+			+ SVerticalBox::Slot().AutoHeight()
+			[
+				SAssignNew(DetailsBox, SVerticalBox)
+			]
+		];
+	}
+
+	TSharedRef<SWidget> MakeMaterialsSection()
+	{
+		return SNew(SBorder).BorderImage(&SectionBrush).Padding(FMargin(14.0f, 12.0f))
+		[
+			SNew(SVerticalBox)
+			+ SVerticalBox::Slot().AutoHeight()
+			[
+				MakeSectionHeading(TEXT("MATERIALES"), TEXT("El modo de construcción actual no consume recursos"))
 			]
 			+ SVerticalBox::Slot().AutoHeight()
 			[
@@ -553,71 +652,114 @@ private:
 		];
 	}
 
-	TSharedRef<SWidget> MakeAmmoSection()
+	TSharedRef<SWidget> MakeFooter()
 	{
-		return SNew(SBorder).BorderImage(SectionBrush.Get()).Padding(FMargin(14.0f, 12.0f))
-		[
-			SNew(SVerticalBox)
-			+ SVerticalBox::Slot().AutoHeight()
-			[
-				MakeSectionHeading(TEXT("BALAS"), TEXT("Munición real del cargador del arma equipada."))
-			]
+		TWeakPtr<SArenaInventorySlate> WeakThis = SharedThis(this);
+		auto SelectedInInventory = [WeakThis](bool bRequireNotEquipped)
+		{
+			if (TSharedPtr<SArenaInventorySlate> Pinned = WeakThis.Pin())
+			{
+				if (UArenaInventoryWidget* InventoryWidget = Pinned->Owner.Get())
+				{
+					const UFortnitePortingCharacterComponent* Component = InventoryWidget->Inventory.Get();
+					return Component
+						&& IsValid(InventoryWidget->SelectedWeapon)
+						&& Component->Weapons.Contains(InventoryWidget->SelectedWeapon)
+						&& (!bRequireNotEquipped || Component->GetCurrentWeapon() != InventoryWidget->SelectedWeapon);
+				}
+			}
+			return false;
+		};
+
+		return SNew(SVerticalBox)
 			+ SVerticalBox::Slot().AutoHeight()
 			[
 				SNew(SHorizontalBox)
-				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0.0f, 0.0f, 12.0f, 0.0f)
+				+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(0.0f, 0.0f, 6.0f, 0.0f)
 				[
-					SNew(SBorder).BorderImage(SlotBrush.Get()).Padding(FMargin(12.0f, 9.0f))
+					SNew(SBox).HeightOverride(48.0f)
 					[
-						SNew(STextBlock).Text(FText::FromString(TEXT("●"))).Font(InventoryFont(17, true)).ColorAndOpacity(InventoryAccent)
+						SNew(SButton)
+						.ButtonStyle(&PrimaryButtonStyle)
+						.HAlign(HAlign_Center).VAlign(VAlign_Center)
+						.IsEnabled_Lambda([SelectedInInventory]() { return SelectedInInventory(true); })
+						.OnHovered_Lambda([WeakThis]() { if (TSharedPtr<SArenaInventorySlate> Pinned = WeakThis.Pin()) { Pinned->PlayHover(); } })
+						.OnClicked_Lambda([WeakThis]()
+						{
+							if (TSharedPtr<SArenaInventorySlate> Pinned = WeakThis.Pin())
+							{
+								if (UArenaInventoryWidget* InventoryWidget = Pinned->Owner.Get())
+								{
+									InventoryWidget->EquipSelectedWeapon();
+								}
+							}
+							return FReply::Handled();
+						})
+						[
+							SNew(STextBlock).Text(FText::FromString(TEXT("EQUIPAR"))).Font(InventoryFont(12, true)).ColorAndOpacity(ArenaGlass::Ink)
+						]
 					]
 				]
-				+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center)
+				+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(6.0f, 0.0f, 0.0f, 0.0f)
 				[
-					SNew(SVerticalBox)
-					+ SVerticalBox::Slot().AutoHeight()
+					SNew(SBox).HeightOverride(48.0f)
 					[
-						SAssignNew(AmmoDescriptionText, STextBlock).Text(FText::FromString(TEXT("Sin arma equipada"))).Font(InventoryFont(10, true)).ColorAndOpacity(FLinearColor(0.77f, 0.83f, 0.91f))
-					]
-					+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 3.0f, 0.0f, 0.0f)
-					[
-						SAssignNew(AmmoCountText, STextBlock).Text(FText::FromString(TEXT("—"))).Font(InventoryFont(18, true)).ColorAndOpacity(FLinearColor::White)
+						SNew(SButton)
+						.ButtonStyle(&DangerButtonStyle)
+						.HAlign(HAlign_Center).VAlign(VAlign_Center)
+						.IsEnabled_Lambda([SelectedInInventory]() { return SelectedInInventory(false); })
+						.OnHovered_Lambda([WeakThis]() { if (TSharedPtr<SArenaInventorySlate> Pinned = WeakThis.Pin()) { Pinned->PlayHover(); } })
+						.OnClicked_Lambda([WeakThis]()
+						{
+							if (TSharedPtr<SArenaInventorySlate> Pinned = WeakThis.Pin())
+							{
+								if (UArenaInventoryWidget* InventoryWidget = Pinned->Owner.Get())
+								{
+									InventoryWidget->DropWeapon(InventoryWidget->SelectedWeapon);
+								}
+							}
+							return FReply::Handled();
+						})
+						[
+							SNew(STextBlock).Text(FText::FromString(TEXT("SOLTAR AL SUELO"))).Font(InventoryFont(12, true)).ColorAndOpacity(ArenaGlass::Ink)
+						]
 					]
 				]
 			]
-		];
+			+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center).Padding(0.0f, 10.0f, 0.0f, 0.0f)
+			[
+				SNew(STextBlock).Text(FText::FromString(TEXT("ESC / TAB para cerrar"))).Font(InventoryFont(9, true)).ColorAndOpacity(FLinearColor(1.0f, 1.0f, 1.0f, 0.40f))
+			];
 	}
 
-	TSharedRef<SWidget> MakeWeaponsSection()
+	TSharedRef<SWidget> MakeEmptySlot(int32 Index)
 	{
-		return SNew(SBorder).BorderImage(SectionBrush.Get()).Padding(FMargin(14.0f, 12.0f))
-		[
-			SNew(SVerticalBox)
-			+ SVerticalBox::Slot().AutoHeight()
+		const TWeakPtr<SArenaInventorySlate> WeakThis = SharedThis(this);
+		return SNew(SButton)
+			.ButtonStyle(&EmptyButtonStyle)
+			.ContentPadding(FMargin(0.0f))
+			.OnSlateButtonDrop_Lambda([WeakThis, Index](const FGeometry&, const FDragDropEvent& Event)
+			{
+				const TSharedPtr<FArenaInventoryWeaponDragDropOp> Operation = Event.GetOperationAs<FArenaInventoryWeaponDragDropOp>();
+				if (Operation.IsValid())
+				{
+					if (TSharedPtr<SArenaInventorySlate> Pinned = WeakThis.Pin())
+					{
+						if (UArenaInventoryWidget* InventoryWidget = Pinned->Owner.Get())
+						{
+							InventoryWidget->MoveWeaponToIndex(Operation->WeaponId, Index);
+						}
+					}
+					return FReply::Handled();
+				}
+				return FReply::Unhandled();
+			})
 			[
-				MakeSectionHeading(TEXT("ARMAS"), TEXT("Selecciona un arma para consultar sus estadísticas."))
-			]
-			+ SVerticalBox::Slot().AutoHeight()
-			[
-				SAssignNew(WeaponsGrid, SUniformGridPanel).SlotPadding(FMargin(6.0f))
-			]
-		];
-	}
-
-	TSharedRef<SWidget> MakeDetailsSection()
-	{
-		return SNew(SBorder).BorderImage(SectionBrush.Get()).Padding(FMargin(14.0f, 12.0f))
-		[
-			SNew(SVerticalBox)
-			+ SVerticalBox::Slot().AutoHeight()
-			[
-				SNew(STextBlock).Text(FText::FromString(TEXT("DETALLES DEL ARMA"))).Font(InventoryFont(10, true)).ColorAndOpacity(FLinearColor(0.58f, 0.68f, 0.8f))
-			]
-			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 8.0f, 0.0f, 0.0f)
-			[
-				SAssignNew(DetailsBox, SVerticalBox)
-			]
-		];
+				SNew(SBox).HeightOverride(ArenaInventoryLayout::CardHeight).HAlign(HAlign_Center).VAlign(VAlign_Center)
+				[
+					SNew(STextBlock).Text(FText::AsNumber(Index + 1)).Font(InventoryFont(11, true)).ColorAndOpacity(FLinearColor(1.0f, 1.0f, 1.0f, 0.16f))
+				]
+			];
 	}
 
 	void RefreshMaterials()
@@ -637,16 +779,16 @@ private:
 			FSlateBrush* Brush = GetIconBrush(Texture);
 			MaterialsRow->AddSlot().FillWidth(1.0f).Padding(3.0f, 0.0f)
 			[
-				SNew(SBorder).BorderImage(SlotBrush.Get()).Padding(FMargin(9.0f, 7.0f))
+				SNew(SBorder).BorderImage(&ChipBrush).Padding(FMargin(10.0f, 8.0f))
 				[
 					SNew(SHorizontalBox)
 					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0.0f, 0.0f, 9.0f, 0.0f)
 					[
-						SNew(SBox).WidthOverride(32.0f).HeightOverride(32.0f)
+						SNew(SBox).WidthOverride(30.0f).HeightOverride(30.0f)
 						[
 							Brush
 								? StaticCastSharedRef<SWidget>(SNew(SImage).Image(Brush))
-								: StaticCastSharedRef<SWidget>(SNew(STextBlock).Text(FText::FromString(TEXT("◆"))).Font(InventoryFont(16, true)).ColorAndOpacity(FLinearColor(0.6f, 0.75f, 0.65f)))
+								: StaticCastSharedRef<SWidget>(MakeDot(ArenaGlass::Mint, 12.0f))
 						]
 					]
 					+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center)
@@ -654,11 +796,11 @@ private:
 						SNew(SVerticalBox)
 						+ SVerticalBox::Slot().AutoHeight()
 						[
-							SNew(STextBlock).Text(FText::FromString(MaterialNames[Index])).Font(InventoryFont(10, true)).ColorAndOpacity(FLinearColor::White)
+							SNew(STextBlock).Text(FText::FromString(MaterialNames[Index])).Font(InventoryFont(10, true)).ColorAndOpacity(ArenaGlass::Ink)
 						]
-						+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 2.0f, 0.0f, 0.0f)
+						+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 1.0f, 0.0f, 0.0f)
 						[
-							SNew(STextBlock).Text(FText::FromString(TEXT("ILIMITADO"))).Font(InventoryFont(8, true)).ColorAndOpacity(FLinearColor(0.58f, 0.79f, 0.66f))
+							SNew(STextBlock).Text(FText::FromString(TEXT("ILIMITADO"))).Font(InventoryFont(8, true)).ColorAndOpacity(ArenaGlass::Mint)
 						]
 					]
 				]
@@ -668,22 +810,29 @@ private:
 
 	void RefreshAmmo()
 	{
-		if (!AmmoCountText.IsValid() || !AmmoDescriptionText.IsValid())
+		if (!AmmoCountText.IsValid() || !AmmoDescriptionText.IsValid() || !HeroNameText.IsValid() || !HeroIcon.IsValid())
 		{
 			return;
 		}
 
 		const UFortnitePortingCharacterComponent* Component = Owner.IsValid() ? Owner->Inventory.Get() : nullptr;
 		const UFortnitePortingWeaponData* Weapon = Component ? Component->GetCurrentWeapon() : nullptr;
+		FSlateBrush* Icon = Weapon ? GetIconBrush(Weapon->Icon) : nullptr;
+		HeroIcon->SetImage(Icon);
+		HeroIcon->SetVisibility(Icon ? EVisibility::HitTestInvisible : EVisibility::Hidden);
+		HeroNameText->SetText(FText::FromString(Weapon ? (Weapon->DisplayName.IsEmpty() ? Weapon->GetName() : Weapon->DisplayName.ToString()) : FString(TEXT("Manos libres"))));
 		if (!Weapon || Weapon->MagazineSize <= 0)
 		{
 			AmmoDescriptionText->SetText(FText::FromString(Weapon ? TEXT("Este objeto no usa balas") : TEXT("Sin arma equipada")));
 			AmmoCountText->SetText(FText::FromString(TEXT("—")));
+			AmmoPercent = 0.0f;
 			return;
 		}
 
+		const int32 InMagazine = Component->GetAmmoInMagazine();
 		AmmoDescriptionText->SetText(FText::FromString(FString::Printf(TEXT("%s · cargador"), *Weapon->WeaponType.ToString())));
-		AmmoCountText->SetText(FText::FromString(FString::Printf(TEXT("%d / %d"), Component->GetAmmoInMagazine(), Weapon->MagazineSize)));
+		AmmoCountText->SetText(FText::FromString(FString::Printf(TEXT("%d / %d"), InMagazine, Weapon->MagazineSize)));
+		AmmoPercent = FMath::Clamp(static_cast<float>(InMagazine) / Weapon->MagazineSize, 0.0f, 1.0f);
 	}
 
 	void RefreshWeapons()
@@ -698,42 +847,20 @@ private:
 		const UFortnitePortingCharacterComponent* Component = Owner.IsValid() ? Owner->Inventory.Get() : nullptr;
 		const TArray<TObjectPtr<UFortnitePortingWeaponData>>* Weapons = Owner.IsValid() ? &Owner->DisplayWeapons : nullptr;
 		const int32 WeaponCount = Weapons ? Weapons->Num() : 0;
-		const int32 SlotCount = FMath::Max(10, WeaponCount);
-		const int32 Columns = 5;
+		const int32 SlotCount = FMath::Max(ArenaInventoryLayout::MinSlots, WeaponCount);
+		if (CountText.IsValid())
+		{
+			CountText->SetText(FText::FromString(FString::Printf(TEXT("%d / %d"), WeaponCount, SlotCount)));
+		}
 
 		for (int32 Index = 0; Index < SlotCount; ++Index)
 		{
 			UFortnitePortingWeaponData* Weapon = Weapons && Weapons->IsValidIndex(Index) ? (*Weapons)[Index] : nullptr;
-			const int32 Row = Index / Columns;
-			const int32 Column = Index % Columns;
-			if (!IsValid(Weapon))
+			const int32 Row = Index / ArenaInventoryLayout::Columns;
+			const int32 Column = Index % ArenaInventoryLayout::Columns;
+			if (!IsValid(Weapon) || !Component)
 			{
-				TWeakPtr<SArenaInventorySlate> WeakThis = SharedThis(this);
-				WeaponsGrid->AddSlot(Column, Row)
-				[
-					SNew(SButton)
-					.ButtonStyle(&EmptyButtonStyle)
-					.ContentPadding(FMargin(4.0f))
-					.OnSlateButtonDrop_Lambda([WeakThis, Index](const FGeometry&, const FDragDropEvent& Event)
-					{
-						const TSharedPtr<FArenaInventoryWeaponDragDropOp> Operation = Event.GetOperationAs<FArenaInventoryWeaponDragDropOp>();
-						if (Operation.IsValid())
-						{
-							if (TSharedPtr<SArenaInventorySlate> Pinned = WeakThis.Pin())
-							{
-								if (UArenaInventoryWidget* InventoryWidget = Pinned->Owner.Get())
-								{
-									InventoryWidget->MoveWeaponToIndex(Operation->WeaponId, Index);
-								}
-							}
-							return FReply::Handled();
-						}
-						return FReply::Unhandled();
-					})
-					[
-						SNew(SBox).HeightOverride(90.0f)
-					]
-				];
+				WeaponsGrid->AddSlot(Column, Row)[MakeEmptySlot(Index)];
 				continue;
 			}
 
@@ -745,9 +872,10 @@ private:
 			TWeakPtr<SArenaInventorySlate> WeakThis = SharedThis(this);
 			TSharedRef<SButton> WeaponButton =
 				SNew(SButton)
-				.ButtonStyle(bSelected ? &SelectedSlotStyle : &EmptyButtonStyle)
+				.ButtonStyle(bSelected ? &SelectedSlotStyle : (bEquipped ? &EquippedSlotStyle : &CardButtonStyle))
 				.AllowDragDrop(true)
-				.ContentPadding(FMargin(8.0f))
+				.ContentPadding(FMargin(0.0f))
+				.OnHovered_Lambda([WeakThis]() { if (TSharedPtr<SArenaInventorySlate> Pinned = WeakThis.Pin()) { Pinned->PlayHover(); } })
 				.OnClicked_Lambda([WeakThis, WeaponId]()
 				{
 					if (TSharedPtr<SArenaInventorySlate> Pinned = WeakThis.Pin())
@@ -826,28 +954,61 @@ private:
 					return FReply::Handled();
 				})
 				[
-					SNew(SBox).HeightOverride(92.0f)
+					SNew(SBox).HeightOverride(ArenaInventoryLayout::CardHeight)
 					[
 						SNew(SOverlay)
-						+ SOverlay::Slot().HAlign(HAlign_Center).VAlign(VAlign_Center).Padding(5.0f, 4.0f, 5.0f, 17.0f)
+						+ SOverlay::Slot()
+						[
+							SNew(SImage).Image(&CardSheen).Visibility(EVisibility::HitTestInvisible)
+						]
+						+ SOverlay::Slot().HAlign(HAlign_Center).VAlign(VAlign_Center).Padding(8.0f, 14.0f, 8.0f, 22.0f)
 						[
 							Weapon->Icon
 								? StaticCastSharedRef<SWidget>(SNew(SImage).Image(GetIconBrush(Weapon->Icon)).ColorAndOpacity(FLinearColor::White))
-								: StaticCastSharedRef<SWidget>(SNew(STextBlock).Text(FText::FromString(Weapon->WeaponType.ToString())).Font(InventoryFont(11, true)).ColorAndOpacity(InventoryAccent).Justification(ETextJustify::Center))
+								: StaticCastSharedRef<SWidget>(SNew(STextBlock).Text(FText::FromString(WeaponType)).Font(InventoryFont(10, true)).ColorAndOpacity(ArenaGlass::Ice).Justification(ETextJustify::Center))
 						]
-						+ SOverlay::Slot().HAlign(HAlign_Fill).VAlign(VAlign_Bottom).Padding(1.0f, 0.0f, 1.0f, 0.0f)
+						+ SOverlay::Slot().HAlign(HAlign_Left).VAlign(VAlign_Top).Padding(8.0f, 5.0f, 0.0f, 0.0f)
 						[
-							SNew(STextBlock).Text(FText::FromString(Name)).Font(InventoryFont(8, true)).ColorAndOpacity(FLinearColor(0.9f, 0.93f, 0.98f)).Justification(ETextJustify::Center).AutoWrapText(false)
+							SNew(STextBlock).Text(FText::AsNumber(Index + 1)).Font(InventoryFont(9, true)).ColorAndOpacity(FLinearColor(1.0f, 1.0f, 1.0f, 0.45f))
 						]
-						+ SOverlay::Slot().HAlign(HAlign_Right).VAlign(VAlign_Top).Padding(0.0f, 1.0f, 0.0f, 0.0f)
+						+ SOverlay::Slot().HAlign(HAlign_Right).VAlign(VAlign_Top).Padding(0.0f, 7.0f, 7.0f, 0.0f)
 						[
-							SNew(STextBlock).Text(FText::FromString(bEquipped ? TEXT("EQUIPADA") : TEXT(""))).Font(InventoryFont(7, true)).ColorAndOpacity(FLinearColor(0.55f, 0.86f, 1.0f))
+							SNew(SBox).Visibility(bEquipped ? EVisibility::HitTestInvisible : EVisibility::Collapsed)
+							[
+								MakeDot(ArenaGlass::Mint, 8.0f)
+							]
+						]
+						+ SOverlay::Slot().HAlign(HAlign_Fill).VAlign(VAlign_Bottom).Padding(4.0f, 0.0f, 4.0f, 6.0f)
+						[
+							SNew(STextBlock).Text(FText::FromString(Name)).Font(InventoryFont(8, true)).ColorAndOpacity(ArenaGlass::Ink).Justification(ETextJustify::Center).AutoWrapText(false)
 						]
 					]
 				];
 			WeaponSlotWidgets.Add(WeaponId, WeaponButton);
 			WeaponsGrid->AddSlot(Column, Row)[WeaponButton];
 		}
+	}
+
+	TSharedRef<SWidget> MakeStat(const TCHAR* Label, const FString& Value, float Percent, const FLinearColor& Color)
+	{
+		const float Clamped = FMath::Clamp(Percent, 0.04f, 1.0f);
+		return SNew(SVerticalBox)
+			+ SVerticalBox::Slot().AutoHeight()
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Bottom)
+				[
+					SNew(STextBlock).Text(FText::FromString(Label)).Font(InventoryFont(9, true)).ColorAndOpacity(ArenaGlass::Dim)
+				]
+				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Bottom)
+				[
+					SNew(STextBlock).Text(FText::FromString(Value)).Font(InventoryFont(12, true)).ColorAndOpacity(ArenaGlass::Ink)
+				]
+			]
+			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 5.0f, 0.0f, 0.0f)
+			[
+				MakeBar(TOptional<float>(Clamped), Color)
+			];
 	}
 
 	void RefreshDetails()
@@ -863,32 +1024,53 @@ private:
 		const UFortnitePortingCharacterComponent* Component = InventoryWidget ? InventoryWidget->Inventory.Get() : nullptr;
 		if (!IsValid(Weapon) || !Component || !Component->Weapons.Contains(Weapon))
 		{
-			DetailsBox->AddSlot().AutoHeight()
+			DetailsBox->AddSlot().AutoHeight().Padding(0.0f, 4.0f)
 			[
-				SNew(STextBlock).Text(FText::FromString(TEXT("Selecciona un arma para ver sus estadísticas."))).Font(InventoryFont(10)).ColorAndOpacity(FLinearColor(0.58f, 0.65f, 0.75f))
+				SNew(STextBlock).Text(FText::FromString(TEXT("Selecciona un arma para ver sus estadísticas."))).Font(InventoryFont(10)).ColorAndOpacity(ArenaGlass::Dim)
 			];
 			return;
 		}
 
 		const bool bEquipped = Component->GetCurrentWeapon() == Weapon;
-		const FString Ammo = bEquipped && Weapon->MagazineSize > 0
+		const FString Magazine = bEquipped && Weapon->MagazineSize > 0
 			? FString::Printf(TEXT("%d / %d"), Component->GetAmmoInMagazine(), Weapon->MagazineSize)
-			: (Weapon->MagazineSize > 0 ? FString::Printf(TEXT("%d"), Weapon->MagazineSize) : TEXT("—"));
-		const FString Stats = FString::Printf(
-			TEXT("%s     DAÑO  %.0f     CADENCIA  %.1f/s     CARGADOR  %s     RECARGA  %.1fs"),
-			*Weapon->WeaponType.ToString(),
-			FMath::Max(Weapon->Damage, 0.0f),
-			Weapon->FireInterval > 0.0f ? 1.0f / Weapon->FireInterval : 0.0f,
-			*Ammo,
-			FMath::Max(Weapon->ReloadTime, 0.0f));
+			: (Weapon->MagazineSize > 0 ? FString::Printf(TEXT("%d"), Weapon->MagazineSize) : FString(TEXT("—")));
+		const float Damage = FMath::Max(Weapon->Damage, 0.0f);
+		const float FireRate = Weapon->FireInterval > 0.0f ? 1.0f / Weapon->FireInterval : 0.0f;
+		const float Reload = FMath::Max(Weapon->ReloadTime, 0.0f);
 
 		DetailsBox->AddSlot().AutoHeight()
 		[
-			SNew(STextBlock).Text(FText::FromString(Weapon->DisplayName.IsEmpty() ? Weapon->GetName() : Weapon->DisplayName.ToString())).Font(InventoryFont(13, true)).ColorAndOpacity(FLinearColor::White)
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center)
+			[
+				SNew(STextBlock).Text(FText::FromString(Weapon->DisplayName.IsEmpty() ? Weapon->GetName() : Weapon->DisplayName.ToString())).Font(InventoryFont(15, true)).ColorAndOpacity(ArenaGlass::Ink)
+			]
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(8.0f, 0.0f, 0.0f, 0.0f)
+			[
+				SNew(SBorder).BorderImage(&PillBrush).Padding(FMargin(10.0f, 4.0f))
+				[
+					SNew(STextBlock).Text(FText::FromString(Weapon->WeaponType.ToString().ToUpper())).Font(InventoryFont(9, true)).ColorAndOpacity(ArenaGlass::Ice)
+				]
+			]
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(6.0f, 0.0f, 0.0f, 0.0f)
+			[
+				SNew(SBorder).BorderImage(&EquippedPillBrush).Padding(FMargin(10.0f, 4.0f)).Visibility(bEquipped ? EVisibility::Visible : EVisibility::Collapsed)
+				[
+					SNew(STextBlock).Text(FText::FromString(TEXT("EN MANO"))).Font(InventoryFont(9, true)).ColorAndOpacity(ArenaGlass::Ink)
+				]
+			]
 		];
-		DetailsBox->AddSlot().AutoHeight().Padding(0.0f, 6.0f, 0.0f, 0.0f)
+
+		TSharedRef<SUniformGridPanel> Stats = SNew(SUniformGridPanel).SlotPadding(FMargin(6.0f, 6.0f));
+		Stats->AddSlot(0, 0)[MakeStat(TEXT("DAÑO"), FString::Printf(TEXT("%.0f"), Damage), Damage / 150.0f, ArenaGlass::Coral)];
+		Stats->AddSlot(1, 0)[MakeStat(TEXT("CADENCIA"), FString::Printf(TEXT("%.1f/s"), FireRate), FireRate / 15.0f, ArenaGlass::Amber)];
+		Stats->AddSlot(0, 1)[MakeStat(TEXT("CARGADOR"), Magazine, Weapon->MagazineSize / 60.0f, ArenaGlass::Ice)];
+		// Shorter reloads fill more of the bar
+		Stats->AddSlot(1, 1)[MakeStat(TEXT("RECARGA"), FString::Printf(TEXT("%.1fs"), Reload), Reload > 0.0f ? 1.0f - Reload / 5.0f : 0.0f, ArenaGlass::Mint)];
+		DetailsBox->AddSlot().AutoHeight().Padding(-6.0f, 8.0f, -6.0f, 0.0f)
 		[
-			SNew(STextBlock).Text(FText::FromString(Stats)).Font(InventoryFont(9)).ColorAndOpacity(FLinearColor(0.72f, 0.79f, 0.88f))
+			Stats
 		];
 	}
 
@@ -911,25 +1093,41 @@ private:
 	}
 
 	TWeakObjectPtr<UArenaInventoryWidget> Owner;
-	TSharedPtr<FSlateRoundedBoxBrush> PanelBrush;
+	FSlateRoundedBoxBrush PanelBrush = FSlateRoundedBoxBrush(FLinearColor(0.03f, 0.05f, 0.11f, 0.58f), ArenaInventoryLayout::PanelRadius, FLinearColor(1.0f, 1.0f, 1.0f, 0.38f), 1.3f);
+	FSlateRoundedBoxBrush PanelEdge = ArenaGlass::EdgeGlow(ArenaInventoryLayout::PanelRadius, 0.09f);
 	FSlateBrush PanelSheen;
-	FSlateRoundedBoxBrush PanelEdge = ArenaGlass::EdgeGlow(20.0f, 0.10f);
-	TSharedPtr<FSlateRoundedBoxBrush> SectionBrush;
-	TSharedPtr<FSlateRoundedBoxBrush> SlotBrush;
-	TSharedPtr<FSlateRoundedBoxBrush> SelectedSlotBrush;
+	FSlateBrush CardSheen;
+	FSlateRoundedBoxBrush SectionBrush = ArenaGlass::Surface(0.045f, 18.0f, 0.10f);
+	FSlateRoundedBoxBrush HeroBrush = FSlateRoundedBoxBrush(FLinearColor(0.10f, 0.30f, 0.55f, 0.35f), 20.0f, FLinearColor(0.55f, 0.85f, 1.0f, 0.55f), 1.2f);
+	FSlateRoundedBoxBrush ChipBrush = FSlateRoundedBoxBrush(FLinearColor(0.05f, 0.08f, 0.16f, 0.70f), 12.0f, FLinearColor(1.0f, 1.0f, 1.0f, 0.16f), 1.0f);
+	FSlateRoundedBoxBrush PillBrush = ArenaGlass::Surface(0.10f, 10.0f, 0.25f);
+	FSlateRoundedBoxBrush EquippedPillBrush = ArenaGlass::Surface(0.24f, 10.0f, 0.75f, ArenaGlass::Mint);
+	FSlateRoundedBoxBrush DotBrush = FSlateRoundedBoxBrush(FLinearColor::White, 5.0f);
+	FSlateRoundedBoxBrush LightBrush = FSlateRoundedBoxBrush(FLinearColor::White);
+	FProgressBarStyle BarStyle;
 	FButtonStyle PrimaryButtonStyle;
-	FButtonStyle SecondaryButtonStyle;
+	FButtonStyle DangerButtonStyle;
+	FButtonStyle CloseButtonStyle;
+	FButtonStyle CardButtonStyle;
+	FButtonStyle EquippedSlotStyle;
 	FButtonStyle SelectedSlotStyle;
 	FButtonStyle EmptyButtonStyle;
 	TArray<FString> MaterialNames;
 	TMap<FString, TWeakPtr<SWidget>> WeaponSlotWidgets;
 	TMap<FString, FSlotAnimation> SlotAnimations;
 	TMap<TWeakObjectPtr<UTexture2D>, TSharedPtr<FSlateBrush>> IconBrushCache;
+	TSharedPtr<SWidget> Backdrop;
+	TSharedPtr<SWidget> PanelRoot;
 	TSharedPtr<SHorizontalBox> MaterialsRow;
 	TSharedPtr<SUniformGridPanel> WeaponsGrid;
 	TSharedPtr<SVerticalBox> DetailsBox;
+	TSharedPtr<STextBlock> CountText;
+	TSharedPtr<STextBlock> HeroNameText;
+	TSharedPtr<SImage> HeroIcon;
 	TSharedPtr<STextBlock> AmmoDescriptionText;
 	TSharedPtr<STextBlock> AmmoCountText;
+	float AmmoPercent = 0.0f;
+	float Reveal = 0.0f;
 };
 
 void UArenaInventoryWidget::InitializeInventory(AArenaPlayerController* InController, UFortnitePortingCharacterComponent* InInventory)
