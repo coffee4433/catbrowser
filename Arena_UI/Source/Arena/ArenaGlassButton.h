@@ -1,5 +1,6 @@
-// Glass button with an animated hover: the rim lights up, thickens and breathes, the glass brightens and the button
-// lifts a little. It takes its look from the same FButtonStyle the other glass widgets use (ArenaGlass::ButtonStyle).
+// Glass button with an animated hover and press: the rim lights up, thickens and breathes, the glass brightens toward ice
+// white, the button lifts a little, sinks while pressed and flashes when released. It takes its look from the same
+// FButtonStyle the other glass widgets use (ArenaGlass::ButtonStyle).
 
 #pragma once
 
@@ -24,6 +25,8 @@ public:
 private:
 	UFUNCTION() void HandleHover();
 	UFUNCTION() void HandleUnhover();
+	UFUNCTION() void HandlePress();
+	UFUNCTION() void HandleRelease();
 
 	void StartAnimation();
 	bool Animate(float DeltaTime);
@@ -34,8 +37,11 @@ private:
 	float BaseRim = 0.3f;
 	FLinearColor BaseTint = FLinearColor::White;
 	float Hover = 0.0f;
+	float Press = 0.0f;
+	float Flash = 0.0f;
 	float Time = 0.0f;
 	bool bHovered = false;
+	bool bPressed = false;
 	bool bBound = false;
 	FTSTicker::FDelegateHandle Ticker;
 };

@@ -2,12 +2,14 @@
 
 #include "ArenaFriendsSubsystem.h"
 #include "ArenaPlayerController.h"
+#include "ArenaUISounds.h"
 #include "Brushes/SlateColorBrush.h"
 #include "Engine/GameInstance.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Styling/CoreStyle.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Layout/SBackgroundBlur.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SScrollBox.h"
@@ -24,99 +26,228 @@ namespace
 		return FCoreStyle::GetDefaultFontStyle("Bold", Size);
 	}
 
-	FButtonStyle MakeStyle(const FLinearColor& Tint, float Radius)
-	{
-		FButtonStyle Style;
-		Style.SetNormal(FSlateRoundedBoxBrush(FLinearColor(Tint.R, Tint.G, Tint.B, 0.42f), Radius, FLinearColor(Tint.R, Tint.G, Tint.B, 0.70f), 1.5f));
-		Style.SetHovered(FSlateRoundedBoxBrush(FLinearColor(Tint.R, Tint.G, Tint.B, 0.62f), Radius, FLinearColor(1, 1, 1, 0.90f), 1.5f));
-		Style.SetPressed(FSlateRoundedBoxBrush(FLinearColor(Tint.R, Tint.G, Tint.B, 0.78f), Radius, FLinearColor(1, 1, 1, 0.95f), 1.5f));
-		Style.SetNormalPadding(FMargin(0));
-		Style.SetPressedPadding(FMargin(0));
-		return Style;
-	}
+	constexpr float PanelRadius = 26.0f;
+	constexpr float ButtonRadius = 18.0f;
+	constexpr float RevealSeconds = 0.42f;
 }
 
-TSharedRef<SWidget> SArenaPauseMenu::MakeButton(const FText& Label, const FLinearColor& Tint, TFunction<void()> OnClick)
+TSharedRef<SWidget> SArenaPauseMenu::MakeGlass(TSharedRef<SWidget> Content, float Radius, const FSlateBrush* SheenBrush, const FSlateBrush* EdgeBrush, float Blur)
 {
-	const bool bDanger = Tint.R > Tint.B;
-	return SNew(SBox).WidthOverride(300.0f).HeightOverride(54.0f)
-	[
-		SNew(SButton)
-		.ButtonStyle(bDanger ? &DangerStyle : &ButtonStyle)
-		.HAlign(HAlign_Center).VAlign(VAlign_Center)
-		.OnClicked_Lambda([OnClick]() { OnClick(); return FReply::Handled(); })
+	const float Corner = ArenaGlass::BlurCorner(Radius);
+	return SNew(SBackgroundBlur)
+		.BlurStrength(Blur)
+		.bApplyAlphaToBlur(false)
+		.Padding(FMargin(0.0f))
+		.CornerRadius(FVector4(Corner, Corner, Corner, Corner))
 		[
-			SNew(STextBlock).Text(Label).Font(Bold(17)).ColorAndOpacity(FLinearColor::White)
-		]
+			SNew(SOverlay)
+			+ SOverlay::Slot()
+			[
+				SNew(SImage).Image(SheenBrush).Visibility(EVisibility::HitTestInvisible)
+			]
+			+ SOverlay::Slot()
+			[
+				Content
+			]
+			+ SOverlay::Slot()
+			[
+				SNew(SImage).Image(EdgeBrush).Visibility(EVisibility::HitTestInvisible)
+			]
+		];
+}
+
+TSharedRef<SWidget> SArenaPauseMenu::MakeLight(const FLinearColor& Color, float Size)
+{
+	return SNew(SBox).WidthOverride(Size).HeightOverride(Size)
+	[
+		SNew(SImage).Image(&LightBrush).ColorAndOpacity(Color)
+	];
+}
+
+TSharedRef<SWidget> SArenaPauseMenu::MakeButton(const FText& Label, const FText& Hint, const FButtonStyle& Style, const FLinearColor& Tint, TFunction<void()> OnClick)
+{
+	TWeakObjectPtr<AArenaPlayerController> Weak = Controller;
+	return SNew(SBox).WidthOverride(330.0f).HeightOverride(62.0f)
+	[
+		MakeGlass(
+			SNew(SButton)
+			.ButtonStyle(&Style)
+			.ContentPadding(FMargin(22.0f, 0.0f))
+			.HAlign(HAlign_Fill).VAlign(VAlign_Center)
+			.OnHovered_Lambda([Weak]() { if (Weak.IsValid()) { ArenaUISounds::PlayHover(Weak.Get()); } })
+			.OnClicked_Lambda([OnClick]() { OnClick(); return FReply::Handled(); })
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 14, 0)
+				[
+					SNew(SBox).WidthOverride(8.0f).HeightOverride(8.0f)
+					[
+						SNew(SImage).Image(&DotBrush).ColorAndOpacity(Tint)
+					]
+				]
+				+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center)
+				[
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot().AutoHeight()
+					[
+						SNew(STextBlock).Text(Label).Font(Bold(17)).ColorAndOpacity(ArenaGlass::Ink)
+					]
+					+ SVerticalBox::Slot().AutoHeight()
+					[
+						SNew(STextBlock).Text(Hint).Font(Bold(10)).ColorAndOpacity(ArenaGlass::Dim)
+					]
+				]
+				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+				[
+					SNew(STextBlock).Text(FText::FromString(TEXT(">"))).Font(Bold(16)).ColorAndOpacity(ArenaGlass::Dim)
+				]
+			],
+			ButtonRadius, &ButtonSheen, &ButtonEdge, 24.0f)
 	];
 }
 
 void SArenaPauseMenu::Construct(const FArguments& InArgs)
 {
 	Controller = InArgs._Controller;
-	ButtonStyle = MakeStyle(FLinearColor(0.20f, 0.55f, 1.0f), 16.0f);
-	DangerStyle = MakeStyle(FLinearColor(0.92f, 0.10f, 0.12f), 16.0f);
-	SmallStyle = MakeStyle(FLinearColor(0.30f, 0.85f, 0.55f), 11.0f);
+	PrimaryStyle = ArenaGlass::ButtonStyle(0.34f, ButtonRadius, 0.75f, ArenaGlass::Ice);
+	GlassStyle = ArenaGlass::ButtonStyle(0.14f, ButtonRadius, 0.42f);
+	DangerStyle = ArenaGlass::ButtonStyle(0.26f, ButtonRadius, 0.62f, ArenaGlass::Coral);
+	SmallStyle = ArenaGlass::ButtonStyle(0.24f, 11.0f, 0.55f, ArenaGlass::Mint);
+	PanelSheen = ArenaGlass::Sheen(PanelRadius, 0.12f);
+	ButtonSheen = ArenaGlass::Sheen(ButtonRadius, 0.18f);
 
 	TWeakObjectPtr<AArenaPlayerController> Weak = Controller;
+	const FLinearColor Deep = ArenaGlass::Deep;
 
 	ChildSlot
 	[
 		SNew(SOverlay)
+		// the dim, big soft colored lights and the blur of the match: the thing the glass refracts
 		+ SOverlay::Slot()
 		[
-			SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush")).BorderBackgroundColor(FLinearColor(0.0f, 0.0f, 0.0f, 0.55f))
+			SAssignNew(Backdrop, SOverlay)
+			.Visibility(EVisibility::HitTestInvisible)
+			+ SOverlay::Slot()
+			[
+				SNew(SImage).Image(&DimBrush).ColorAndOpacity(FLinearColor(Deep.R, Deep.G, Deep.B, 0.55f))
+			]
+			+ SOverlay::Slot().HAlign(HAlign_Left).VAlign(VAlign_Top).Padding(FMargin(-380.0f, -480.0f, 0.0f, 0.0f))
+			[
+				MakeLight(FLinearColor(0.45f, 0.32f, 1.0f, 0.42f), 1000.0f)
+			]
+			+ SOverlay::Slot().HAlign(HAlign_Right).VAlign(VAlign_Bottom).Padding(FMargin(0.0f, 0.0f, -320.0f, -520.0f))
+			[
+				MakeLight(FLinearColor(0.10f, 0.80f, 0.80f, 0.34f), 1000.0f)
+			]
+			+ SOverlay::Slot().HAlign(HAlign_Center).VAlign(VAlign_Bottom).Padding(FMargin(0.0f, 0.0f, 0.0f, -650.0f))
+			[
+				MakeLight(FLinearColor(0.20f, 0.45f, 1.0f, 0.30f), 900.0f)
+			]
+			+ SOverlay::Slot()
+			[
+				SNew(SBackgroundBlur).BlurStrength(40.0f).bApplyAlphaToBlur(false).Padding(FMargin(0.0f))
+			]
 		]
 		// the buttons, centre left
 		+ SOverlay::Slot().HAlign(HAlign_Left).VAlign(VAlign_Center).Padding(90, 0, 0, 0)
 		[
-			SNew(SVerticalBox)
-			+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 22)
+			SAssignNew(Menu, SVerticalBox)
+			+ SVerticalBox::Slot().AutoHeight().Padding(4, 0, 0, 2)
 			[
-				SNew(STextBlock).Text(LOCTEXT("Pause", "PAUSA")).Font(Bold(40)).ColorAndOpacity(FLinearColor::White)
+				SNew(STextBlock).Text(LOCTEXT("InMatch", "PARTIDA EN CURSO")).Font(Bold(12)).ColorAndOpacity(ArenaGlass::Mint)
+			]
+			+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 26)
+			[
+				SNew(STextBlock).Text(LOCTEXT("Pause", "PAUSA")).Font(Bold(54)).ColorAndOpacity(ArenaGlass::Ink)
+				.ShadowOffset(FVector2D(0.0f, 3.0f)).ShadowColorAndOpacity(FLinearColor(0.0f, 0.0f, 0.05f, 0.5f))
 			]
 			+ SVerticalBox::Slot().AutoHeight().Padding(0, 6)
 			[
-				MakeButton(LOCTEXT("Continue", "CONTINUAR"), FLinearColor(0.20f, 0.55f, 1.0f), [Weak]() { if (Weak.IsValid()) { Weak->HidePauseMenu(); } })
+				MakeButton(LOCTEXT("Continue", "CONTINUAR"), LOCTEXT("ContinueHint", "Vuelve a la partida"), PrimaryStyle, ArenaGlass::Ice,
+					[Weak]() { if (Weak.IsValid()) { Weak->HidePauseMenu(); } })
 			]
 			+ SVerticalBox::Slot().AutoHeight().Padding(0, 6)
 			[
-				MakeButton(LOCTEXT("Settings", "AJUSTES"), FLinearColor(0.20f, 0.55f, 1.0f), [Weak]() { if (Weak.IsValid()) { Weak->HidePauseMenu(); Weak->OpenSettings(); } })
+				MakeButton(LOCTEXT("Settings", "AJUSTES"), LOCTEXT("SettingsHint", "Vídeo, audio y controles"), GlassStyle, FLinearColor::White,
+					[Weak]() { if (Weak.IsValid()) { Weak->HidePauseMenu(); Weak->OpenSettings(); } })
 			]
 			+ SVerticalBox::Slot().AutoHeight().Padding(0, 6)
 			[
-				MakeButton(LOCTEXT("Leave", "ABANDONAR PARTIDA"), FLinearColor(0.95f, 0.28f, 0.25f), [Weak]() { if (Weak.IsValid()) { Weak->LeaveMatch(); } })
+				MakeButton(LOCTEXT("Leave", "ABANDONAR PARTIDA"), LOCTEXT("LeaveHint", "Sales al lobby"), DangerStyle, ArenaGlass::Coral,
+					[Weak]() { if (Weak.IsValid()) { Weak->LeaveMatch(); } })
+			]
+			+ SVerticalBox::Slot().AutoHeight().Padding(4, 18, 0, 0)
+			[
+				SNew(STextBlock).Text(LOCTEXT("EscHint", "ESC para volver")).Font(Bold(11)).ColorAndOpacity(FLinearColor(1.0f, 1.0f, 1.0f, 0.40f))
 			]
 		]
 		// the social panel, right
 		+ SOverlay::Slot().HAlign(HAlign_Right).VAlign(VAlign_Fill).Padding(0, 50, 50, 50)
 		[
-			SNew(SBox).WidthOverride(400.0f)
+			SAssignNew(Panel, SBox).WidthOverride(400.0f)
 			[
-				SNew(SBorder).BorderImage(&PanelBrush).Padding(FMargin(22, 18))
-				[
-					SNew(SVerticalBox)
-					+ SVerticalBox::Slot().AutoHeight()
+				MakeGlass(
+					SNew(SBorder).BorderImage(&PanelBrush).Padding(FMargin(24, 22))
 					[
-						SNew(STextBlock).Text(LOCTEXT("Social", "SOCIAL")).Font(Bold(22)).ColorAndOpacity(FLinearColor::White)
-					]
-					+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 14)
-					[
-						SNew(STextBlock).Text(LOCTEXT("SocialSub", "Tus amigos de Epic")).Font(Bold(12)).ColorAndOpacity(FLinearColor(1, 1, 1, 0.55f))
-					]
-					+ SVerticalBox::Slot().FillHeight(1.0f)
-					[
-						SNew(SScrollBox).ScrollBarVisibility(EVisibility::Collapsed)
-						+ SScrollBox::Slot()
+						SNew(SVerticalBox)
+						+ SVerticalBox::Slot().AutoHeight()
 						[
-							SAssignNew(FriendsBox, SVerticalBox)
+							SNew(STextBlock).Text(LOCTEXT("SocialSmall", "EN LÍNEA")).Font(Bold(11)).ColorAndOpacity(ArenaGlass::Mint)
 						]
-					]
-				]
+						+ SVerticalBox::Slot().AutoHeight()
+						[
+							SNew(STextBlock).Text(LOCTEXT("Social", "SOCIAL")).Font(Bold(26)).ColorAndOpacity(ArenaGlass::Ink)
+						]
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 16)
+						[
+							SNew(STextBlock).Text(LOCTEXT("SocialSub", "Tus amigos de Epic")).Font(Bold(12)).ColorAndOpacity(ArenaGlass::Dim)
+						]
+						+ SVerticalBox::Slot().FillHeight(1.0f)
+						[
+							SNew(SScrollBox).ScrollBarVisibility(EVisibility::Collapsed)
+							+ SScrollBox::Slot()
+							[
+								SAssignNew(FriendsBox, SVerticalBox)
+							]
+						]
+					],
+					PanelRadius, &PanelSheen, &PanelEdge, 32.0f)
 			]
 		]
 	];
+	SetCanTick(true);
+	ApplyReveal();
 	RebuildFriends();
+}
+
+void SArenaPauseMenu::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
+{
+	SCompoundWidget::Tick(AllottedGeometry, InCurrentTime, InDeltaTime);
+	if (Reveal < 1.0f)
+	{
+		Reveal = FMath::Min(Reveal + InDeltaTime / RevealSeconds, 1.0f);
+		ApplyReveal();
+	}
+}
+
+void SArenaPauseMenu::ApplyReveal()
+{
+	// Ease out: the dim fades in while the buttons slide in from the left and the panel from the right
+	const float Eased = 1.0f - FMath::Pow(1.0f - Reveal, 3.0f);
+	if (Backdrop.IsValid())
+	{
+		Backdrop->SetRenderOpacity(Eased);
+	}
+	if (Menu.IsValid())
+	{
+		Menu->SetRenderOpacity(Eased);
+		Menu->SetRenderTransform(TOptional<FSlateRenderTransform>(FSlateRenderTransform(FVector2f(-48.0f * (1.0f - Eased), 0.0f))));
+	}
+	if (Panel.IsValid())
+	{
+		Panel->SetRenderOpacity(Eased);
+		Panel->SetRenderTransform(TOptional<FSlateRenderTransform>(FSlateRenderTransform(FVector2f(64.0f * (1.0f - Eased), 0.0f))));
+	}
 }
 
 void SArenaPauseMenu::RebuildFriends()

@@ -299,7 +299,7 @@ UWidget* UArenaLobbyWidget::WrapGlass(UWidget* Content, const FMargin& InnerPadd
 	Surface->SetBrush(ArenaGlass::Surface(Fill, Radius, Rim, Tint, 1.3f));
 	Surface->SetPadding(InnerPadding);
 	Surface->SetContent(Content);
-	Blur->SetContent(Surface);
+	Blur->SetContent(ArenaGlass::Layered(WidgetTree, Surface, Radius, Tint));
 	return Blur;
 }
 

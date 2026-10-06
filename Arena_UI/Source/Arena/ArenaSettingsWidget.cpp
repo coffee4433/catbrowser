@@ -915,7 +915,7 @@ void UArenaSettingsWidget::BuildLayout()
 		OutSurface = WidgetTree->ConstructWidget<UBorder>();
 		OutSurface->SetBrush(Surface(0.09f, 22.0f, 0.38f, FLinearColor::White, 1.3f));
 		OutSurface->SetPadding(InnerPadding);
-		Blur->SetContent(OutSurface);
+		Blur->SetContent(Layered(WidgetTree, OutSurface, 22.0f));
 		return Blur;
 	};
 

@@ -3,6 +3,7 @@
 #include "Arena.h"
 #include "ArenaControls.h"
 #include "ArenaPlayerController.h"
+#include "ArenaGlassStyle.h"
 #include "Brushes/SlateRoundedBoxBrush.h"
 #include "FortnitePortingCharacterComponent.h"
 #include "FortnitePortingCosmeticData.h"
@@ -12,6 +13,8 @@
 #include "Styling/CoreStyle.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Layout/SBackgroundBlur.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SScrollBox.h"
@@ -31,11 +34,7 @@ namespace
 
 	FButtonStyle MakeInventoryButtonStyle(const FLinearColor& Color)
 	{
-		FButtonStyle Style;
-		Style.SetNormal(FSlateRoundedBoxBrush(FLinearColor(Color.R, Color.G, Color.B, 0.28f), 10.0f, FLinearColor(Color.R, Color.G, Color.B, 0.45f), 1.0f));
-		Style.SetHovered(FSlateRoundedBoxBrush(FLinearColor(Color.R, Color.G, Color.B, 0.52f), 10.0f, FLinearColor::White, 1.0f));
-		Style.SetPressed(FSlateRoundedBoxBrush(FLinearColor(Color.R, Color.G, Color.B, 0.7f), 10.0f, FLinearColor::White, 1.0f));
-		Style.SetNormalPadding(FMargin(0));
+		FButtonStyle Style = ArenaGlass::ButtonStyle(0.30f, 12.0f, 0.55f, Color);
 		Style.SetPressedPadding(FMargin(0));
 		return Style;
 	}
@@ -62,21 +61,9 @@ namespace
 
 		void Begin()
 		{
-			NormalBrush = MakeShared<FSlateRoundedBoxBrush>(
-				FLinearColor(0.07f, 0.09f, 0.14f, 0.95f),
-				11.0f,
-				FLinearColor(0.55f, 0.64f, 0.78f, 0.18f),
-				1.0f);
-			HoverBrush = MakeShared<FSlateRoundedBoxBrush>(
-				FLinearColor(0.1f, 0.14f, 0.22f, 1.0f),
-				11.0f,
-				FLinearColor(0.45f, 0.63f, 0.85f, 0.5f),
-				1.0f);
-			SelectedBrush = MakeShared<FSlateRoundedBoxBrush>(
-				FLinearColor(0.08f, 0.24f, 0.38f, 0.96f),
-				11.0f,
-				FLinearColor(0.25f, 0.72f, 1.0f, 0.95f),
-				1.5f);
+			NormalBrush = MakeShared<FSlateRoundedBoxBrush>(FLinearColor(0.05f, 0.08f, 0.16f, 0.82f), 11.0f, FLinearColor(1.0f, 1.0f, 1.0f, 0.22f), 1.0f);
+			HoverBrush = MakeShared<FSlateRoundedBoxBrush>(FLinearColor(0.10f, 0.16f, 0.28f, 0.88f), 11.0f, FLinearColor(0.80f, 0.92f, 1.0f, 0.70f), 1.4f);
+			SelectedBrush = MakeShared<FSlateRoundedBoxBrush>(FLinearColor(0.15f, 0.45f, 0.75f, 0.70f), 11.0f, FLinearColor(0.55f, 0.85f, 1.0f, 0.95f), 1.6f);
 			CardStyle.SetNormal(bWasSelected ? *SelectedBrush : *NormalBrush);
 			CardStyle.SetHovered(bWasSelected ? *SelectedBrush : *HoverBrush);
 			CardStyle.SetPressed(bWasSelected ? *SelectedBrush : *NormalBrush);
@@ -186,17 +173,19 @@ public:
 	void Construct(const FArguments& InArgs)
 	{
 		Owner = InArgs._Owner;
-		PanelBrush = MakeShared<FSlateRoundedBoxBrush>(FLinearColor(0.035f, 0.047f, 0.075f, 0.97f), 20.0f, FLinearColor(0.55f, 0.68f, 0.88f, 0.25f), 1.0f);
-		SectionBrush = MakeShared<FSlateRoundedBoxBrush>(FLinearColor(1.0f, 1.0f, 1.0f, 0.035f), 13.0f, FLinearColor(1.0f, 1.0f, 1.0f, 0.07f), 1.0f);
-		SlotBrush = MakeShared<FSlateRoundedBoxBrush>(FLinearColor(0.07f, 0.09f, 0.14f, 0.95f), 11.0f, FLinearColor(0.55f, 0.64f, 0.78f, 0.18f), 1.0f);
-		SelectedSlotBrush = MakeShared<FSlateRoundedBoxBrush>(FLinearColor(0.08f, 0.24f, 0.38f, 0.96f), 11.0f, FLinearColor(0.25f, 0.72f, 1.0f, 0.95f), 1.5f);
+		// Liquid glass: a dark translucent surface over the blur of the match, a bright rim and a sheen along the top
+		PanelBrush = MakeShared<FSlateRoundedBoxBrush>(FLinearColor(0.03f, 0.05f, 0.11f, 0.62f), 20.0f, FLinearColor(1.0f, 1.0f, 1.0f, 0.40f), 1.3f);
+		PanelSheen = ArenaGlass::Sheen(20.0f, 0.12f);
+		SectionBrush = MakeShared<FSlateRoundedBoxBrush>(FLinearColor(1.0f, 1.0f, 1.0f, 0.05f), 13.0f, FLinearColor(1.0f, 1.0f, 1.0f, 0.12f), 1.0f);
+		SlotBrush = MakeShared<FSlateRoundedBoxBrush>(FLinearColor(0.05f, 0.08f, 0.16f, 0.82f), 11.0f, FLinearColor(1.0f, 1.0f, 1.0f, 0.22f), 1.0f);
+		SelectedSlotBrush = MakeShared<FSlateRoundedBoxBrush>(FLinearColor(0.15f, 0.45f, 0.75f, 0.70f), 11.0f, FLinearColor(0.55f, 0.85f, 1.0f, 0.95f), 1.6f);
 		PrimaryButtonStyle = MakeInventoryButtonStyle(InventoryAccent);
 		SecondaryButtonStyle = MakeInventoryButtonStyle(FLinearColor(0.5f, 0.6f, 0.75f));
 		SelectedSlotStyle.SetNormal(*SelectedSlotBrush);
 		SelectedSlotStyle.SetHovered(*SelectedSlotBrush);
 		SelectedSlotStyle.SetPressed(*SelectedSlotBrush);
 		EmptyButtonStyle.SetNormal(*SlotBrush);
-		EmptyButtonStyle.SetHovered(FSlateRoundedBoxBrush(FLinearColor(0.1f, 0.14f, 0.22f, 1.0f), 11.0f, FLinearColor(0.45f, 0.63f, 0.85f, 0.5f), 1.0f));
+		EmptyButtonStyle.SetHovered(FSlateRoundedBoxBrush(FLinearColor(0.10f, 0.16f, 0.28f, 0.88f), 11.0f, FLinearColor(0.80f, 0.92f, 1.0f, 0.70f), 1.4f));
 		EmptyButtonStyle.SetPressed(*SlotBrush);
 		EmptyButtonStyle.SetNormalPadding(FMargin(0));
 		EmptyButtonStyle.SetPressedPadding(FMargin(0));
@@ -227,6 +216,17 @@ public:
 			]
 			+ SOverlay::Slot().HAlign(HAlign_Center).VAlign(VAlign_Center).Padding(20.0f)
 			[
+				SNew(SOverlay)
+				+ SOverlay::Slot()
+				[
+					SNew(SBackgroundBlur).BlurStrength(32.0f).bApplyAlphaToBlur(false).Padding(FMargin(0.0f)).Visibility(EVisibility::HitTestInvisible)
+					.CornerRadius(FVector4(ArenaGlass::BlurCorner(20.0f), ArenaGlass::BlurCorner(20.0f), ArenaGlass::BlurCorner(20.0f), ArenaGlass::BlurCorner(20.0f)))
+					[
+						SNew(SImage).Image(&PanelSheen)
+					]
+				]
+				+ SOverlay::Slot()
+				[
 				SNew(SBox).WidthOverride(680.0f).MaxDesiredHeight(790.0f)
 				[
 					SNew(SBorder)
@@ -361,6 +361,11 @@ public:
 							]
 						]
 					]
+				]
+				]
+				+ SOverlay::Slot()
+				[
+					SNew(SImage).Image(&PanelEdge).Visibility(EVisibility::HitTestInvisible)
 				]
 			]
 		];
@@ -907,6 +912,8 @@ private:
 
 	TWeakObjectPtr<UArenaInventoryWidget> Owner;
 	TSharedPtr<FSlateRoundedBoxBrush> PanelBrush;
+	FSlateBrush PanelSheen;
+	FSlateRoundedBoxBrush PanelEdge = ArenaGlass::EdgeGlow(20.0f, 0.10f);
 	TSharedPtr<FSlateRoundedBoxBrush> SectionBrush;
 	TSharedPtr<FSlateRoundedBoxBrush> SlotBrush;
 	TSharedPtr<FSlateRoundedBoxBrush> SelectedSlotBrush;

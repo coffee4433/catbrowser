@@ -214,7 +214,7 @@ void UArenaEmoteWheel::Build()
 	Blur->SetCornerRadius(FVector4(Corner, Corner, Corner, Corner));
 	UBorder* Disc = WidgetTree->ConstructWidget<UBorder>();
 	Disc->SetBrush(Surface(0.12f, DiscSize * 0.5f, 0.45f, FLinearColor::White, 1.4f));
-	Blur->SetContent(Disc);
+	Blur->SetContent(Layered(WidgetTree, Disc, DiscSize * 0.5f, FLinearColor::White, 0.10f, 0.08f));
 	Place(Blur, FVector2D::ZeroVector, FVector2D(DiscSize, DiscSize))->SetZOrder(1);
 
 	// Thin inner ring that frames the center
