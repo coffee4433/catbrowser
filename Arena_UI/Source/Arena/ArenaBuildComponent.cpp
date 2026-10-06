@@ -39,6 +39,10 @@ namespace
 {
 	const FIntPoint Directions[4] = { FIntPoint(1, 0), FIntPoint(0, 1), FIntPoint(-1, 0), FIntPoint(0, -1) };
 
+	// a stair with Rotation r climbs toward heading (r + 3) & 3 (0 +X, 1 +Y, 2 -X, 3 -Y)
+	int32 StairClimbHeading(int32 Rotation) { return (Rotation + 3) & 3; }
+	int32 StairRotationFor(int32 ClimbHeading) { return (ClimbHeading + 1) & 3; }
+
 	FSlateFontInfo BoldFont(int32 Size)
 	{
 		return FCoreStyle::GetDefaultFontStyle("Bold", Size);
@@ -287,6 +291,8 @@ void UArenaBuildComponent::RotatePiece()
 
 UArenaBuildComponent::FTarget UArenaBuildComponent::ComputeTarget() const
 {
+	// Fortnite's rule: the piece goes one cell in front of your BODY (where you face, not where the crosshair lands), on the storey
+	// your feet are on. Looking up lifts it a storey, looking well down drops it one. No searching, no thresholds to wait for.
 	FTarget Target;
 	const APlayerController* PC = GetController();
 	const APawn* Pawn = PC ? PC->GetPawn() : nullptr;
@@ -297,115 +303,39 @@ UArenaBuildComponent::FTarget UArenaBuildComponent::ComputeTarget() const
 	const FVector Location = Pawn->GetActorLocation();
 	const float Feet = Location.Z - Pawn->GetSimpleCollisionHalfHeight();
 	const FRotator View = PC->GetControlRotation();
-	const int32 Heading = FMath::RoundToInt(FRotator::NormalizeAxis(View.Yaw) / 90.0f) & 3;   // 0 +X, 1 +Y, 2 -X, 3 -Y
-	const bool bLookingUp = FRotator::NormalizeAxis(View.Pitch) > 25.0f;
+	const float Yaw = FRotator::NormalizeAxis(View.Yaw);
+	const float Pitch = FRotator::NormalizeAxis(View.Pitch);
+	const int32 Heading = FMath::RoundToInt(Yaw / 90.0f) & 3;   // 0 +X, 1 +Y, 2 -X, 3 -Y
+	const FVector Forward = FRotator(0.0f, Yaw, 0.0f).Vector();
+	const bool bLookingUp = Pitch > 28.0f;
+	const bool bLookingDown = Pitch < -42.0f;
 
-	const FIntPoint Here(FMath::FloorToInt(Location.X / ArenaBuild::CellSize), FMath::FloorToInt(Location.Y / ArenaBuild::CellSize));
-	const int32 Level = FMath::FloorToInt((Feet + 20.0f) / ArenaBuild::Story);
-	const FIntPoint Ahead = Here + Directions[Heading];
+	const auto CellOf = [](const FVector& Point)
+	{
+		return FIntPoint(FMath::FloorToInt(Point.X / ArenaBuild::CellSize), FMath::FloorToInt(Point.Y / ArenaBuild::CellSize));
+	};
+	const FIntPoint Here = CellOf(Location);
+	const FIntPoint Ahead = CellOf(Location + Forward * ArenaBuild::CellSize);
+
+	// The storey of your feet. On a ramp the piece in front continues from the ramp's top, the one behind sits at its foot, and
+	// anything beside you snaps to the nearest storey: ramp towers, side ramps and 90 degree turns need no aiming.
+	const int32 FeetLevel = FMath::FloorToInt((Feet + 20.0f) / ArenaBuild::Story);
+	int32 Level = FeetLevel;
 	const UCharacterMovementComponent* Movement = Pawn->FindComponentByClass<UCharacterMovementComponent>();
-	const bool bIsFalling = Movement && Movement->IsFalling();
-
-	// Floors, stairs and roofs go where the crosshair meets the floor of the current storey (up to two cells away).
-	FIntPoint AimedCell = Ahead;
-	bool bAimedAtCurrentCell = false;
+	const AArenaBuildPiece* Standing = Movement && Movement->CurrentFloor.bBlockingHit ? Cast<AArenaBuildPiece>(Movement->CurrentFloor.HitResult.GetActor()) : nullptr;
+	if (Standing && (Standing->GetPiece() == EArenaBuildPiece::Stair || Standing->GetPiece() == EArenaBuildPiece::Roof))
 	{
-		FVector Eye;
-		FRotator ViewRotation;
-		PC->GetPlayerViewPoint(Eye, ViewRotation);
-		const FVector Dir = ViewRotation.Vector();
-		const float PlaneZ = Level * ArenaBuild::Story;
-		if (Dir.Z < -0.08f && Eye.Z > PlaneZ)
+		Level = FMath::FloorToInt(Feet / ArenaBuild::Story + 0.5f);
+		if (Standing->GetPiece() == EArenaBuildPiece::Stair && !Standing->IsSpiral())
 		{
-			const FVector Hit = Eye + Dir * ((PlaneZ - Eye.Z) / Dir.Z);
-			const FIntPoint Cell(FMath::FloorToInt(Hit.X / ArenaBuild::CellSize), FMath::FloorToInt(Hit.Y / ArenaBuild::CellSize));
-			if (FMath::Abs(Cell.X - Here.X) <= 2 && FMath::Abs(Cell.Y - Here.Y) <= 2)
+			const int32 Climb = StairClimbHeading(Standing->GetRotation());
+			if (Heading == Climb)
 			{
-				if (Cell == Here)
-				{
-					bAimedAtCurrentCell = true;
-				}
-				else
-				{
-					AimedCell = Cell;
-				}
+				Level = Standing->GetCell().Z + 1;
 			}
-		}
-	}
-
-	int32 StairPlacementLevel = Level;
-	FIntPoint StairContinuationCell = AimedCell;
-	const bool bPlaceStairInCurrentCell = SelectedPiece == EArenaBuildPiece::Stair && bAimedAtCurrentCell && bIsFalling;
-	if (bPlaceStairInCurrentCell)
-	{
-		StairContinuationCell = Here;
-	}
-	else if (SelectedPiece == EArenaBuildPiece::Stair && bAimedAtCurrentCell)
-	{
-		int32 AheadEdge = 1;
-		FIntVector AheadWallCell(Here.X, Here.Y, Level);
-		switch (Heading)
-		{
-		case 0: AheadEdge = 2; AheadWallCell.X += 1; break;
-		case 1: AheadEdge = 1; AheadWallCell.Y += 1; break;
-		case 2: AheadEdge = 2; break;
-		default: AheadEdge = 1; break;
-		}
-		if (IsSlotTaken(EArenaBuildPiece::Wall, AheadWallCell, AheadEdge))
-		{
-			StairContinuationCell = Here;
-		}
-	}
-	int32 StairPlacementHeading = Heading;
-	if (SelectedPiece == EArenaBuildPiece::Stair && !bPlaceStairInCurrentCell)
-	{
-		constexpr float StairEdgeTolerance = 100.0f;
-		constexpr float StairTurnThreshold = 12.0f;
-		float BestStairDistanceSquared = TNumericLimits<float>::Max();
-		for (TActorIterator<AArenaBuildPiece> It(GetWorld()); It; ++It)
-		{
-			const AArenaBuildPiece* Stair = *It;
-			const FIntVector& StairCell = Stair->GetCell();
-			const float HeightAboveStairBase = Feet - StairCell.Z * ArenaBuild::Story;
-			const int32 ClimbHeading = (Stair->GetRotation() + 3) & 3;
-			const float YawFromClimb = FRotator::NormalizeAxis(View.Yaw - ClimbHeading * 90.0f);
-			constexpr float StairHeightTolerance = 20.0f;
-			if (Stair->GetPiece() != EArenaBuildPiece::Stair
-				|| HeightAboveStairBase < -StairHeightTolerance
-				|| HeightAboveStairBase > ArenaBuild::Story + StairHeightTolerance)
+			else if (Heading == ((Climb + 2) & 3))
 			{
-				continue;
-			}
-
-			const float MinX = StairCell.X * ArenaBuild::CellSize - StairEdgeTolerance;
-			const float MinY = StairCell.Y * ArenaBuild::CellSize - StairEdgeTolerance;
-			const float MaxX = (StairCell.X + 1) * ArenaBuild::CellSize + StairEdgeTolerance;
-			const float MaxY = (StairCell.Y + 1) * ArenaBuild::CellSize + StairEdgeTolerance;
-			if (Location.X < MinX || Location.X > MaxX || Location.Y < MinY || Location.Y > MaxY)
-			{
-				continue;
-			}
-
-			const FVector2D StairCenter(
-				(StairCell.X + 0.5f) * ArenaBuild::CellSize,
-				(StairCell.Y + 0.5f) * ArenaBuild::CellSize);
-			const float DistanceSquared = FVector2D::DistSquared(FVector2D(Location.X, Location.Y), StairCenter);
-			if (DistanceSquared < BestStairDistanceSquared)
-			{
-				BestStairDistanceSquared = DistanceSquared;
-				StairPlacementHeading = ClimbHeading;
-				int32 SideHeading = ClimbHeading;
-				if (YawFromClimb > StairTurnThreshold && YawFromClimb < 135.0f)
-				{
-					SideHeading = (ClimbHeading + 1) & 3;
-				}
-				else if (YawFromClimb < -StairTurnThreshold && YawFromClimb > -135.0f)
-				{
-					SideHeading = (ClimbHeading + 3) & 3;
-				}
-				const bool bPlacingBesideStair = SideHeading != ClimbHeading;
-				StairPlacementLevel = StairCell.Z + (bPlacingBesideStair ? 0 : 1);
-				StairContinuationCell = FIntPoint(StairCell.X, StairCell.Y) + Directions[SideHeading];
+				Level = Standing->GetCell().Z;
 			}
 		}
 	}
@@ -414,28 +344,67 @@ UArenaBuildComponent::FTarget UArenaBuildComponent::ComputeTarget() const
 	switch (SelectedPiece)
 	{
 	case EArenaBuildPiece::Wall:
-		// the wall goes on the edge of your cell that you are facing
+	{
+		// the edge of your cell that you face; a diagonal look slides it to the cell beside you (double walls, Fortnite style)
+		const FIntPoint Side = CellOf(Location + Forward * (ArenaBuild::CellSize * 0.5f));
+		const int32 WallLevel = Level + (bLookingUp ? 1 : (bLookingDown ? -1 : 0));
 		switch (Heading)
 		{
-		case 0: Target.Edge = 2; Target.Cell = FIntVector(Here.X + 1, Here.Y, Level); break;
-		case 1: Target.Edge = 1; Target.Cell = FIntVector(Here.X, Here.Y + 1, Level); break;
-		case 2: Target.Edge = 2; Target.Cell = FIntVector(Here.X, Here.Y, Level); break;
-		default: Target.Edge = 1; Target.Cell = FIntVector(Here.X, Here.Y, Level); break;
+		case 0: Target.Edge = 2; Target.Cell = FIntVector(Here.X + 1, Side.Y, WallLevel); break;
+		case 1: Target.Edge = 1; Target.Cell = FIntVector(Side.X, Here.Y + 1, WallLevel); break;
+		case 2: Target.Edge = 2; Target.Cell = FIntVector(Here.X, Side.Y, WallLevel); break;
+		default: Target.Edge = 1; Target.Cell = FIntVector(Side.X, Here.Y, WallLevel); break;
 		}
 		break;
+	}
 	case EArenaBuildPiece::Floor:
-	{
-		const FIntPoint FloorCell = bAimedAtCurrentCell && bIsFalling ? Here : AimedCell;
-		Target.Cell = bLookingUp ? FIntVector(Here.X, Here.Y, Level + 1) : FIntVector(FloorCell.X, FloorCell.Y, Level);
+		// up: a ceiling over your head; down: under your own feet; otherwise the cell in front
+		if (bLookingUp)
+		{
+			Target.Cell = FIntVector(Here.X, Here.Y, Level + 1);
+		}
+		else if (bLookingDown)
+		{
+			Target.Cell = FIntVector(Here.X, Here.Y, FeetLevel);
+		}
+		else
+		{
+			Target.Cell = FIntVector(Ahead.X, Ahead.Y, Level);
+		}
 		Target.Rotation = UserRotation;
 		break;
-	}
 	case EArenaBuildPiece::Stair:
-		Target.Cell = FIntVector(StairContinuationCell.X, StairContinuationCell.Y, StairPlacementLevel);
-		Target.Rotation = ((StairPlacementHeading + 1 + UserRotation) & 3);       // keep the same climb direction when adding a side-by-side stair
+	{
+		// the ramp climbs the way you face; looking well down it goes under the edge in front and descends away from you
+		int32 ClimbHeading = Heading;
+		int32 StairLevel = Level;
+		if (bLookingUp)
+		{
+			StairLevel = Level + 1;
+		}
+		else if (bLookingDown)
+		{
+			StairLevel = FeetLevel - 1;
+			ClimbHeading = (Heading + 2) & 3;
+		}
+		Target.Cell = FIntVector(Ahead.X, Ahead.Y, StairLevel);
+		Target.Rotation = (StairRotationFor(ClimbHeading) + UserRotation) & 3;
 		break;
+	}
 	default:
-		Target.Cell = bLookingUp ? FIntVector(Here.X, Here.Y, Level + 1) : FIntVector(AimedCell.X, AimedCell.Y, Level);
+		// the cone: over your head when looking up, on your own cell when looking down, otherwise in front
+		if (bLookingUp)
+		{
+			Target.Cell = FIntVector(Here.X, Here.Y, Level + 1);
+		}
+		else if (bLookingDown)
+		{
+			Target.Cell = FIntVector(Here.X, Here.Y, FeetLevel);
+		}
+		else
+		{
+			Target.Cell = FIntVector(Ahead.X, Ahead.Y, Level);
+		}
 		Target.Rotation = UserRotation;
 		break;
 	}
@@ -1309,7 +1278,7 @@ void UArenaBuildComponent::BuildEditTiles()
 	float StairTileLength = ArenaBuild::CellSize * 0.5f;
 	if (bStair)
 	{
-		const int32 ClimbHeading = (Piece->GetRotation() + 3) & 3;
+		const int32 ClimbHeading = StairClimbHeading(Piece->GetRotation());
 		StairClimbDirection = FVector(Directions[ClimbHeading].X, Directions[ClimbHeading].Y, 0.0f);
 		const FVector WidthDirection(StairClimbDirection.Y, -StairClimbDirection.X, 0.0f);
 		const FVector RampDirection = (StairClimbDirection + FVector(0.0f, 0.0f, ArenaBuild::Story / ArenaBuild::CellSize)).GetSafeNormal();
