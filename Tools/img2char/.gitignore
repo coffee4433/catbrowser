@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+out/
+# Plantillas generadas por `img2char templates build` (deterministas, ~3 MB cada una).
+templates/

@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "img2char"
+version = "0.1.0"
+description = "Imagen → personaje 3D por partes, sin IA generativa (fase 1: plantilla + visor)"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "pygltflib>=1.16",
+]
+
+[project.optional-dependencies]
+ui = ["PySide6>=6.5"]
+dev = ["pytest>=8", "pillow>=10"]
+
+[project.scripts]
+img2char = "img2char.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["img2char*"]
+
+[tool.setuptools.package-data]
+"img2char.app" = ["qml/*.qml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
