@@ -1,0 +1,14 @@
+singleton Theme 1.0 Theme.qml
+Panel 1.0 Panel.qml
+Label2 1.0 Label2.qml
+SectionTitle 1.0 SectionTitle.qml
+Chip 1.0 Chip.qml
+AccentSlider 1.0 AccentSlider.qml
+PrimaryButton 1.0 PrimaryButton.qml
+WinButton 1.0 WinButton.qml
+LinkText 1.0 LinkText.qml
+ImageView 1.0 ImageView.qml
+TemplatePage 1.0 TemplatePage.qml
+InputPage 1.0 InputPage.qml
+MaskPage 1.0 MaskPage.qml
+PointsPage 1.0 PointsPage.qml

@@ -1,4 +1,4 @@
-"""Línea de comandos: `img2char templates build|check`, `img2char export`, `img2char ui`."""
+"""Línea de comandos: `img2char templates build|check`, `export`, `analyze`, `synth`, `ui`."""
 from __future__ import annotations
 
 import argparse
@@ -62,6 +62,52 @@ def cmd_export(args) -> int:
     return 0
 
 
+def cmd_analyze(args) -> int:
+    from .pipeline import Job, analyze_job
+
+    a = analyze_job(Job(images={"front": args.image}, height_cm=args.height))
+    files = a.save(args.out)
+    lm = a.landmarks
+    print(f"silueta: {int((a.seg.mask > 0).sum())} px · altura {lm.height_px:.0f} px · {lm.heads:.2f} cabezas · "
+          f"{a.camera.px_per_cm:.3f} px/cm")
+    shares: dict = {}
+    for m in a.materials_summary():
+        shares[m["label"]] = shares.get(m["label"], 0.0) + m["share"]
+    print("materiales: " + ", ".join(f"{k} {v * 100:.0f} %" for k, v in sorted(shares.items(), key=lambda kv: -kv[1])))
+    for w in a.warnings:
+        print(f"aviso: {w}")
+    for k, p in files.items():
+        print(f"{k}: {p}")
+    return 0
+
+
+def cmd_synth(args) -> int:
+    """Foto sintética de prueba renderizada desde la plantilla (con su verdad terreno)."""
+    import cv2
+    import numpy as np
+
+    from .core.synth import synth_photo
+    from .core.template.landmarks2d import template_points
+    from .pipeline import load_template
+
+    t = load_template(args.name, args.dir)
+    alpha = np.zeros(len(t.morph_names))
+    for kv in args.morph or []:
+        k, _, v = kv.partition("=")
+        alpha[t.morph_names.index(k)] = float(v)
+    r = synth_photo(t, alpha, height_px=args.height_px, outfit=not args.no_outfit)
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(out), cv2.cvtColor(r["rgb"], cv2.COLOR_RGB2BGR))
+    truth = {"height_cm": round(r["height_cm"], 3), "morphs": dict(zip(t.morph_names, alpha.tolist())),
+             "landmarks": {k: [round(float(x), 2) for x in r["camera"].project(p)[0]]
+                           for k, p in template_points(t, r["V"]).items()}}
+    out.with_suffix(".json").write_text(json.dumps(truth, indent=1), encoding="utf-8")
+    print(f"{out} ({r['rgb'].shape[1]}×{r['rgb'].shape[0]}) · altura {r['height_cm']:.1f} cm · "
+          f"verdad terreno en {out.with_suffix('.json')}")
+    return 0
+
+
 def cmd_ui(args) -> int:
     from .app.main import run
 
@@ -84,6 +130,18 @@ def main(argv=None) -> int:
     e.add_argument("--morph", action="append", metavar="NOMBRE=VALOR")
     e.add_argument("--no-caps", action="store_true")
     e.set_defaults(fn=cmd_export)
+    an = sub.add_parser("analyze", help="fase 2: máscara, puntos, partes 2D y materiales de una foto frontal")
+    an.add_argument("image")
+    an.add_argument("--height", type=float, required=True, help="altura del personaje en cm")
+    an.add_argument("--out", default="out/analysis")
+    an.set_defaults(fn=cmd_analyze)
+    sy = sub.add_parser("synth", help="renderiza una foto de prueba desde la plantilla")
+    sy.add_argument("name", choices=TEMPLATE_NAMES)
+    sy.add_argument("--out", default="out/synth.png")
+    sy.add_argument("--morph", action="append", metavar="NOMBRE=VALOR")
+    sy.add_argument("--height-px", type=int, default=1600)
+    sy.add_argument("--no-outfit", action="store_true")
+    sy.set_defaults(fn=cmd_synth)
     sub.add_parser("ui", help="abre la aplicación").set_defaults(fn=cmd_ui)
     args = ap.parse_args(argv)
     return args.fn(args)

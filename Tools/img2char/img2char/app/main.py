@@ -1,7 +1,8 @@
 """Aplicación de escritorio (README §12): PySide6 + QML + Qt Quick 3D.
 
 Fase 1: carga la plantilla, lista las 28 piezas, vista explosionada, tapas, alambre, control de
-calidad, sliders de morphs y exportación .glb.
+calidad, sliders de morphs y exportación .glb. Fase 2: pantallas Entrada, Máscara y Puntos
+(`photo.py`).
 """
 from __future__ import annotations
 
@@ -21,6 +22,7 @@ from ..core.parts import explode_offsets, quality_report, split_parts
 from ..core.template.model import Template, ensure_templates
 from ..core.template.parts_def import MATERIAL_COLORS
 from ..pipeline import STEPS
+from .photo import OverlayProvider, PhotoController
 
 QML_DIR = Path(__file__).with_name("qml")
 
@@ -242,11 +244,19 @@ def run(template_dir: Path, argv=None) -> int:
     app = QGuiApplication(argv or sys.argv)
     app.setApplicationName("Imagen→3D")
     ctrl = Controller(template_dir)
-    engine = QQmlApplicationEngine()
-    engine.rootContext().setContextProperty("app", ctrl)
-    engine.load(QUrl.fromLocalFile(str(QML_DIR / "Main.qml")))
+    photo = PhotoController()
+    engine = create_engine(ctrl, photo)
     if not engine.rootObjects():
         return 1
     code = app.exec()
-    del engine  # antes que el Controller: evita bindings QML evaluados contra un contexto ya destruido
+    del engine  # antes que los controladores: evita bindings QML evaluados contra un contexto ya destruido
     return code
+
+
+def create_engine(ctrl: Controller, photo: PhotoController) -> QQmlApplicationEngine:
+    engine = QQmlApplicationEngine()
+    engine.addImageProvider("overlay", OverlayProvider(photo))
+    engine.rootContext().setContextProperty("app", ctrl)
+    engine.rootContext().setContextProperty("photo", photo)
+    engine.load(QUrl.fromLocalFile(str(QML_DIR / "Main.qml")))
+    return engine
