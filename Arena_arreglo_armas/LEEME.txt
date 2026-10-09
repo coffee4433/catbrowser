@@ -1,0 +1,13 @@
+Arreglo de armas (escopeta / rifle / francotirador) para Arena - rama nueva-version
+
+Opcion A (recomendada, con git):
+  cd <repo Arena>
+  git checkout nueva-version
+  git am arreglo-armas.patch
+
+Opcion B (copiar archivos):
+  Copiar la carpeta Unreal/Arena/Plugins/FortnitePorting/Source de este zip encima de la del proyecto
+  (sustituye los archivos existentes).
+
+Despues: recompilar el proyecto, abrir el editor y ejecutar en la consola  FP.UpgradeAnimBlueprints
+Detalles en docs/ARREGLO_ARMAS.md
