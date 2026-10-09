@@ -1,0 +1,748 @@
+From b507c5eff1be53d8a3156327c4cccfd94b0a6740 Mon Sep 17 00:00:00 2001
+From: Hoplite <hoplite@users.noreply.github.com>
+Date: Fri, 9 Oct 2026 07:24:52 +0000
+Subject: [PATCH] =?UTF-8?q?FortnitePorting:=20arreglo=20de=20armas=20en=20?=
+ =?UTF-8?q?la=20mano=20(pose=20de=20sujeci=C3=B3n,=20trote=20y=20recarga)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- Las poses de sujeción y el trote con arma se reproducen como montajes transitorios en bucle en vez de congelar un montaje de 0,034 s
+- Deteccion en runtime de un slot UpperBody que no llega a la pose final, con fallback a cuerpo completo y error en el log
+- Sin persistencia en .ini del giro del arma ni del agarre de la mano izquierda (un valor malo quedaba fijo)
+- RepairUpperBodyLayer en el generador de Anim Blueprints (FP.UpgradeAnimBlueprints) reconstruye la capa de armas si esta mal cableada
+---
+ .../Processing/AnimBlueprintGenerator.cpp     | 168 ++++++++++++-
+ .../Processing/FortnitePortingBuilder.cpp     |   3 +-
+ .../Processing/AnimBlueprintGenerator.h       |   9 +
+ .../FortnitePortingCharacterComponent.cpp     | 228 ++++++++++++------
+ .../FortnitePortingCharacterComponent.h       |  28 +++
+ docs/ARREGLO_ARMAS.md                         |  43 ++++
+ 6 files changed, 393 insertions(+), 86 deletions(-)
+ create mode 100644 docs/ARREGLO_ARMAS.md
+
+diff --git a/Unreal/Arena/Plugins/FortnitePorting/Source/FortnitePorting/Private/Processing/AnimBlueprintGenerator.cpp b/Unreal/Arena/Plugins/FortnitePorting/Source/FortnitePorting/Private/Processing/AnimBlueprintGenerator.cpp
+index 89ee2e4..4986c94 100644
+--- a/Unreal/Arena/Plugins/FortnitePorting/Source/FortnitePorting/Private/Processing/AnimBlueprintGenerator.cpp
++++ b/Unreal/Arena/Plugins/FortnitePorting/Source/FortnitePorting/Private/Processing/AnimBlueprintGenerator.cpp
+@@ -39,6 +39,7 @@
+ #include "Animation/Skeleton.h"
+ #include "AssetRegistry/AssetRegistryModule.h"
+ #include "EdGraph/EdGraph.h"
++#include "EdGraph/EdGraphSchema.h"
+ #include "Factories/AnimBlueprintFactory.h"
+ #include "Kismet2/BlueprintEditorUtils.h"
+ #include "Kismet2/KismetEditorUtilities.h"
+@@ -1026,26 +1027,36 @@ bool FAnimBlueprintGenerator::AddUpperBodyLayer(UAnimBlueprint* AnimBlueprint)
+ 		DefaultSlot = DefaultSlot ? DefaultSlot : Slot;
+ 	}
+ 
++	return InsertUpperBodyLayer(AnimBlueprint, FindPosePin(DefaultSlot, EGPD_Input));
++}
++
++bool FAnimBlueprintGenerator::InsertUpperBodyLayer(UAnimBlueprint* AnimBlueprint, UEdGraphPin* CutIn)
++{
++	UEdGraph* AnimGraph = AnimBlueprint ? FindAnimGraph(AnimBlueprint) : nullptr;
++	if (AnimGraph == nullptr)
++	{
++		return false;
++	}
++
+ 	TArray<UAnimGraphNode_StateMachine*> StateMachines;
+ 	AnimGraph->GetNodesOfClass<UAnimGraphNode_StateMachine>(StateMachines);
+ 	UAnimGraphNode_StateMachine* StateMachine = StateMachines.Num() > 0 ? StateMachines[0] : nullptr;
+-	// The pose feeding DefaultSlot: the state machine itself, or the pickaxe upper body switch placed after it
+-	UEdGraphPin* StateMachineOut = DefaultSlot && FindPosePin(DefaultSlot, EGPD_Input) && FindPosePin(DefaultSlot, EGPD_Input)->LinkedTo.Num() == 1
+-		? FindPosePin(DefaultSlot, EGPD_Input)->LinkedTo[0] : FindPosePin(StateMachine, EGPD_Output);
+-	UEdGraphPin* DefaultSlotIn = FindPosePin(DefaultSlot, EGPD_Input);
+-	if (StateMachineOut == nullptr || DefaultSlotIn == nullptr)
++	// The pose feeding CutIn (normally DefaultSlot): the state machine itself, or the pickaxe upper body switch placed after it
++	UEdGraphPin* StateMachineOut = CutIn && CutIn->LinkedTo.Num() == 1 ? CutIn->LinkedTo[0] : FindPosePin(StateMachine, EGPD_Output);
++	if (StateMachineOut == nullptr || CutIn == nullptr || StateMachine == nullptr)
+ 	{
+ 		UE_LOG(LogFortnitePorting, Warning, TEXT("%s does not have the generated State Machine -> DefaultSlot layout, weapon upper body layer not added"), *AnimBlueprint->GetName());
+ 		return false;
+ 	}
++	UEdGraphNode* CutNode = CutIn->GetOwningNode();
+ 
+ 	RegisterUpperBodySlot(AnimBlueprint->TargetSkeleton);
+ 	StateMachineOut->BreakAllPinLinks();
+ 
+ 	// State Machine -> Save Cached Pose; the cached pose feeds both the legs (base) and the UpperBody slot
+-	const int32 X = DefaultSlot->NodePosX;
+-	const int32 Y = DefaultSlot->NodePosY;
+-	DefaultSlot->NodePosX = X + 150;
++	const int32 X = CutNode->NodePosX;
++	const int32 Y = CutNode->NodePosY;
++	CutNode->NodePosX = X + 150;
+ 	StateMachine->NodePosX = X - 1100;
+ 
+ 	UAnimGraphNode_SaveCachedPose* SaveNode = SpawnNode<UAnimGraphNode_SaveCachedPose>(*AnimGraph, X - 800, Y - 250);
+@@ -1075,19 +1086,158 @@ bool FAnimBlueprintGenerator::AddUpperBodyLayer(UAnimBlueprint* AnimBlueprint)
+ 	Filter.BlendDepth = 0;
+ 	Layered->Node.LayerSetup[0].BranchFilters.Reset();
+ 	Layered->Node.LayerSetup[0].BranchFilters.Add(Filter);
++	Layered->Node.BlendWeights[0] = 1.0f;
+ 	Layered->Node.bMeshSpaceRotationBlend = true;
+ 	LayeredCreator.Finalize();
+ 
++	// The weapon layer is always on: with nothing playing in the slot it passes the locomotion through unchanged
++	if (UEdGraphPin* WeightPin = Layered->FindPin(TEXT("BlendWeights_0"), EGPD_Input))
++	{
++		AnimGraph->GetSchema()->TrySetDefaultValue(*WeightPin, TEXT("1.0"));
++	}
++
+ 	Connect(FindPosePin(BaseCache, EGPD_Output), FindPinByName(Layered, TEXT("BasePose"), EGPD_Input, 0));
+ 	Connect(FindPosePin(SlotCache, EGPD_Output), FindPosePin(UpperSlot, EGPD_Input));
+ 	Connect(FindPosePin(UpperSlot, EGPD_Output), FindPinByName(Layered, TEXT("BlendPoses_0"), EGPD_Input, 1));
+-	Connect(FindPosePin(Layered, EGPD_Output), DefaultSlotIn);
++	Connect(FindPosePin(Layered, EGPD_Output), CutIn);
+ 
+ 	Compile(AnimBlueprint);
+ 	UE_LOG(LogFortnitePorting, Log, TEXT("Added the UpperBody weapon layer to %s"), *AnimBlueprint->GetName());
+ 	return true;
+ }
+ 
++bool FAnimBlueprintGenerator::RepairUpperBodyLayer(UAnimBlueprint* AnimBlueprint)
++{
++	UEdGraph* AnimGraph = AnimBlueprint ? FindAnimGraph(AnimBlueprint) : nullptr;
++	if (AnimGraph == nullptr)
++	{
++		return false;
++	}
++
++	TArray<UAnimGraphNode_Slot*> Slots;
++	AnimGraph->GetNodesOfClass<UAnimGraphNode_Slot>(Slots);
++	UAnimGraphNode_Slot* UpperSlot = nullptr;
++	UAnimGraphNode_Slot* DefaultSlot = nullptr;
++	for (UAnimGraphNode_Slot* Slot : Slots)
++	{
++		if (Slot->Node.SlotName == UpperBodySlot)
++		{
++			UpperSlot = Slot;
++		}
++		else if (Slot->Node.SlotName != AdditiveSlot)
++		{
++			DefaultSlot = DefaultSlot ? DefaultSlot : Slot;
++		}
++	}
++	if (UpperSlot == nullptr)
++	{
++		return false;      // AddUpperBodyLayer builds it from scratch
++	}
++
++	// Healthy: cached locomotion -> UpperBody slot -> layered blend (spine_01, weight 1) -> somewhere on the way to the output
++	FString Problem;
++	UEdGraphPin* SlotIn = FindPosePin(UpperSlot, EGPD_Input);
++	UEdGraphPin* SlotOut = FindPosePin(UpperSlot, EGPD_Output);
++	UAnimGraphNode_LayeredBoneBlend* Layered = nullptr;
++	if (SlotIn == nullptr || SlotIn->LinkedTo.Num() != 1 || !SlotIn->LinkedTo[0]->GetOwningNode()->IsA<UAnimGraphNode_UseCachedPose>())
++	{
++		Problem = TEXT("the UpperBody slot does not read the cached locomotion");
++	}
++	else if (SlotOut == nullptr || SlotOut->LinkedTo.Num() != 1 || (Layered = Cast<UAnimGraphNode_LayeredBoneBlend>(SlotOut->LinkedTo[0]->GetOwningNode())) == nullptr)
++	{
++		Problem = TEXT("the UpperBody slot does not feed a Layered blend per bone");
++	}
++	else
++	{
++		UEdGraphPin* Base = FindPinByName(Layered, TEXT("BasePose"), EGPD_Input, 0);
++		UEdGraphPin* Out = FindPosePin(Layered, EGPD_Output);
++		UEdGraphPin* Weight = Layered->FindPin(TEXT("BlendWeights_0"), EGPD_Input);
++		const bool bFilter = Layered->Node.LayerSetup.Num() > 0 && Layered->Node.LayerSetup[0].BranchFilters.Num() > 0
++			&& Layered->Node.LayerSetup[0].BranchFilters[0].BoneName == UpperBodyRootBone;
++		if (Base == nullptr || Base->LinkedTo.Num() != 1 || Out == nullptr || Out->LinkedTo.Num() != 1)
++		{
++			Problem = TEXT("the weapon layer is not connected on both sides");
++		}
++		else if (!bFilter)
++		{
++			Problem = FString::Printf(TEXT("the weapon layer does not start at %s"), *UpperBodyRootBone.ToString());
++		}
++		else if (Weight != nullptr && Weight->LinkedTo.Num() == 0 && FCString::Atof(*Weight->DefaultValue) < 0.99f)
++		{
++			// The pin default is what runs when nothing is plugged in: a 0 here hides every weapon montage without any error
++			AnimGraph->GetSchema()->TrySetDefaultValue(*Weight, TEXT("1.0"));
++			Layered->Node.BlendWeights[0] = 1.0f;
++			Compile(AnimBlueprint);
++			UE_LOG(LogFortnitePorting, Warning, TEXT("%s: the weapon layer weight was %s, set to 1"), *AnimBlueprint->GetName(), *Weight->DefaultValue);
++			return true;
++		}
++	}
++
++	if (Problem.IsEmpty())
++	{
++		return false;
++	}
++
++	UE_LOG(LogFortnitePorting, Warning, TEXT("%s: %s; rebuilding the UpperBody weapon layer"), *AnimBlueprint->GetName(), *Problem);
++
++	// Whatever fed the cached locomotion (the state machine or the pickaxe switch) goes straight back into DefaultSlot, then the layer is
++	// added again as on a fresh import. The IK, additive and twist nodes after DefaultSlot are not touched.
++	TArray<UAnimGraphNode_SaveCachedPose*> Saves;
++	AnimGraph->GetNodesOfClass<UAnimGraphNode_SaveCachedPose>(Saves);
++	UAnimGraphNode_SaveCachedPose* LocomotionCache = nullptr;
++	for (UAnimGraphNode_SaveCachedPose* Save : Saves)
++	{
++		if (Save->CacheName == LocomotionCacheName)
++		{
++			LocomotionCache = Save;
++		}
++	}
++	TArray<UAnimGraphNode_StateMachine*> StateMachines;
++	AnimGraph->GetNodesOfClass<UAnimGraphNode_StateMachine>(StateMachines);
++	UEdGraphPin* CacheIn = LocomotionCache ? FindPosePin(LocomotionCache, EGPD_Input) : nullptr;
++	UEdGraphPin* Source = CacheIn && CacheIn->LinkedTo.Num() == 1 ? CacheIn->LinkedTo[0] : (StateMachines.Num() > 0 ? FindPosePin(StateMachines[0], EGPD_Output) : nullptr);
++	// The pin the layer used to drive (the additive slot or DefaultSlot) is where the new layer cuts in again
++	UEdGraphPin* LayerOut = Layered ? FindPosePin(Layered, EGPD_Output) : nullptr;
++	UEdGraphPin* Target = LayerOut && LayerOut->LinkedTo.Num() == 1 ? LayerOut->LinkedTo[0] : FindPosePin(DefaultSlot, EGPD_Input);
++	if (Source == nullptr || Target == nullptr)
++	{
++		UE_LOG(LogFortnitePorting, Error, TEXT("%s: no state machine / DefaultSlot to rebuild the weapon layer from, open the Anim Blueprint and check its graph"), *AnimBlueprint->GetName());
++		return false;
++	}
++
++	TArray<UEdGraphNode*> Doomed;
++	Doomed.Add(UpperSlot);
++	if (Layered != nullptr)
++	{
++		Doomed.Add(Layered);
++	}
++	if (LocomotionCache != nullptr)
++	{
++		Doomed.Add(LocomotionCache);
++		TArray<UAnimGraphNode_UseCachedPose*> Uses;
++		AnimGraph->GetNodesOfClass<UAnimGraphNode_UseCachedPose>(Uses);
++		for (UAnimGraphNode_UseCachedPose* Use : Uses)
++		{
++			if (FWeakObjectProperty* SaveProperty = CastField<FWeakObjectProperty>(Use->GetClass()->FindPropertyByName(TEXT("SaveCachedPoseNode"))))
++			{
++				if (SaveProperty->GetObjectPropertyValue_InContainer(Use) == LocomotionCache)
++				{
++					Doomed.Add(Use);
++				}
++			}
++		}
++	}
++	for (UEdGraphNode* Node : Doomed)
++	{
++		FBlueprintEditorUtils::RemoveNode(AnimBlueprint, Node, true);
++	}
++	Source->BreakAllPinLinks();
++	Target->BreakAllPinLinks();
++	Connect(Source, Target);
++
++	return InsertUpperBodyLayer(AnimBlueprint, Target);
++}
++
+ UAnimBlueprint* FAnimBlueprintGenerator::CreatePartsBlueprint(const FString& Folder, const FString& Name, USkeleton* Skeleton, USkeletalMesh* PreviewMesh)
+ {
+ 	UAnimBlueprint* AnimBlueprint = CreateAnimBlueprint(Folder, Name, Skeleton, PreviewMesh, UAnimInstance::StaticClass());
+diff --git a/Unreal/Arena/Plugins/FortnitePorting/Source/FortnitePorting/Private/Processing/FortnitePortingBuilder.cpp b/Unreal/Arena/Plugins/FortnitePorting/Source/FortnitePorting/Private/Processing/FortnitePortingBuilder.cpp
+index 7348a05..c355a75 100644
+--- a/Unreal/Arena/Plugins/FortnitePorting/Source/FortnitePorting/Private/Processing/FortnitePortingBuilder.cpp
++++ b/Unreal/Arena/Plugins/FortnitePorting/Source/FortnitePorting/Private/Processing/FortnitePortingBuilder.cpp
+@@ -2357,7 +2357,8 @@ int32 FFortnitePortingBuilder::UpgradeCharacterAnimBlueprints()
+ 			continue;
+ 		}
+ 
+-		if (FAnimBlueprintGenerator::EnsureUpperBodyLayer(AnimBlueprint))
++		const bool bRepaired = FAnimBlueprintGenerator::RepairUpperBodyLayer(AnimBlueprint);
++		if (FAnimBlueprintGenerator::EnsureUpperBodyLayer(AnimBlueprint) || bRepaired)
+ 		{
+ 			UEditorAssetLibrary::SaveLoadedAsset(AnimBlueprint, false);
+ 			UpgradedCount++;
+diff --git a/Unreal/Arena/Plugins/FortnitePorting/Source/FortnitePorting/Public/Processing/AnimBlueprintGenerator.h b/Unreal/Arena/Plugins/FortnitePorting/Source/FortnitePorting/Public/Processing/AnimBlueprintGenerator.h
+index 828c6fc..a014fd8 100644
+--- a/Unreal/Arena/Plugins/FortnitePorting/Source/FortnitePorting/Public/Processing/AnimBlueprintGenerator.h
++++ b/Unreal/Arena/Plugins/FortnitePorting/Source/FortnitePorting/Public/Processing/AnimBlueprintGenerator.h
+@@ -3,6 +3,7 @@
+ #include "CoreMinimal.h"
+ 
+ class UAnimBlueprint;
++class UEdGraphPin;
+ class UAnimSequence;
+ class UAnimationAsset;
+ class UBlendSpace1D;
+@@ -72,6 +73,12 @@ public:
+ 	 */
+ 	static bool EnsureUpperBodyLayer(UAnimBlueprint* AnimBlueprint);
+ 
++	/**
++	 * Checks that the UpperBody slot of a generated blueprint really reaches the output (cached locomotion -> slot -> layered blend
++	 * from spine_01 at weight 1) and rebuilds the layer when it does not. Returns true if the graph changed (and was recompiled).
++	 */
++	static bool RepairUpperBodyLayer(UAnimBlueprint* AnimBlueprint);
++
+ 	/**
+ 	 * Adds left hand IK (Modify Bone rotation + Two Bone IK on hand_l) right before the Output Pose,
+ 	 * driven by UFortnitePortingAnimInstance::LeftHandIK*. Returns true if the graph changed (not compiled).
+@@ -98,6 +105,8 @@ public:
+ 
+ private:
+ 	static bool AddUpperBodyLayer(UAnimBlueprint* AnimBlueprint);
++	/** Cuts the cached locomotion + UpperBody slot + layered blend in front of CutIn (the pose input that will read the layer) */
++	static bool InsertUpperBodyLayer(UAnimBlueprint* AnimBlueprint, UEdGraphPin* CutIn);
+ 	static UAnimBlueprint* BuildLocomotionGraph(UAnimBlueprint* AnimBlueprint, USkeleton* Skeleton, const FLocomotionAnimSet& AnimSet);
+ 
+ 	static UAnimBlueprint* CreateAnimBlueprint(const FString& Folder, const FString& Name, USkeleton* Skeleton, USkeletalMesh* PreviewMesh, UClass* ParentClass);
+diff --git a/Unreal/Arena/Plugins/FortnitePorting/Source/FortnitePortingRuntime/Private/FortnitePortingCharacterComponent.cpp b/Unreal/Arena/Plugins/FortnitePorting/Source/FortnitePortingRuntime/Private/FortnitePortingCharacterComponent.cpp
+index 61fdd95..5258435 100644
+--- a/Unreal/Arena/Plugins/FortnitePorting/Source/FortnitePortingRuntime/Private/FortnitePortingCharacterComponent.cpp
++++ b/Unreal/Arena/Plugins/FortnitePorting/Source/FortnitePortingRuntime/Private/FortnitePortingCharacterComponent.cpp
+@@ -417,48 +417,6 @@ bool UFortnitePortingCharacterComponent::GetLeftHandIKTarget(FTransform& OutHand
+ 	return true;
+ }
+ 
+-namespace
+-{
+-	// The turn that lines a weapon up with the hand animation is fixed for that weapon (it comes from how it was imported), so it is
+-	// kept between runs: the next equip starts with it instead of showing the barrel pointing to the side during the draw.
+-	const TCHAR* WeaponFitSection = TEXT("FortnitePorting.WeaponFit");
+-
+-	FQuat LoadWeaponFit(const FString& Weapon)
+-	{
+-		FString Text;
+-		FQuat Fit = FQuat::Identity;
+-		if (GConfig && GConfig->GetString(WeaponFitSection, *Weapon, Text, GGameUserSettingsIni) && Fit.InitFromString(Text))
+-		{
+-			return Fit.GetNormalized();
+-		}
+-		return FQuat::Identity;
+-	}
+-
+-	bool LoadWeaponGrip(const FString& Weapon, FTransform& OutGrip)
+-	{
+-		FString Text;
+-		return GConfig && GConfig->GetString(WeaponFitSection, *(Weapon + TEXT(".Grip")), Text, GGameUserSettingsIni) && OutGrip.InitFromString(Text);
+-	}
+-
+-	void SaveWeaponGrip(const FString& Weapon, const FTransform& Grip)
+-	{
+-		if (GConfig)
+-		{
+-			GConfig->SetString(WeaponFitSection, *(Weapon + TEXT(".Grip")), *Grip.ToString(), GGameUserSettingsIni);
+-			GConfig->Flush(false, GGameUserSettingsIni);
+-		}
+-	}
+-
+-	void SaveWeaponFit(const FString& Weapon, const FQuat& Fit)
+-	{
+-		if (GConfig)
+-		{
+-			GConfig->SetString(WeaponFitSection, *Weapon, *Fit.ToString(), GGameUserSettingsIni);
+-			GConfig->Flush(false, GGameUserSettingsIni);
+-		}
+-	}
+-}
+-
+ bool UFortnitePortingCharacterComponent::UpdateWeaponLeftHandIK(float DeltaTime)
+ {
+ 	const ACharacter* Character = GetCharacter();
+@@ -474,7 +432,7 @@ bool UFortnitePortingCharacterComponent::UpdateWeaponLeftHandIK(float DeltaTime)
+ 	static const FName UnderbarrelSocket(TEXT("Underbarrel"));
+ 	const USkeletalMeshComponent* WeaponMeshComponent = IsValid(WeaponActor) ? WeaponActor->WeaponMesh.Get() : nullptr;
+ 	const bool bHasGripSocket = WeaponMeshComponent != nullptr && WeaponMeshComponent->DoesSocketExist(UnderbarrelSocket);
+-	const bool bPlayingEquip = ActiveWeaponMontage != nullptr && CurrentWeapon != nullptr && ActiveWeaponMontage == CurrentWeapon->GetEquipMontage(SkeletonProfile);
++	const bool bPlayingEquip = ActiveWeaponMontage != nullptr && bActiveMontageIsEquip;
+ 	const bool bBusy = ActiveWeaponMontage != nullptr && !(bHasGripSocket && bPlayingEquip);
+ 	const bool bAimingNow = GetAimAlpha() >= 0.05f;
+ 	if (!bLeftHandIK || Character == nullptr || Body == nullptr || Source == nullptr || !IsValid(WeaponActor) || !bTwoHanded || bCombatBlocked
+@@ -539,11 +497,6 @@ bool UFortnitePortingCharacterComponent::UpdateWeaponLeftHandIK(float DeltaTime)
+ 				const FVector Off = (HandWorld.GetLocation() - OnBarrel).GetClampedToMaxSize(3.0f);
+ 				LeftHandOnWeapon = FTransform(HandWorld.GetRotation(), OnBarrel + Off).GetRelativeTransform(WeaponActor->GetActorTransform());
+ 				bLeftHandOnWeaponValid = true;
+-				if (!bWeaponGripSaved && WeaponGripSettle > 1.2f)
+-				{
+-					SaveWeaponGrip(CurrentWeapon->GetName(), LeftHandOnWeapon);      // the next equip starts with the hand on the weapon
+-					bWeaponGripSaved = true;
+-				}
+ 			}
+ 		}
+ 	}
+@@ -608,7 +561,6 @@ void UFortnitePortingCharacterComponent::UpdateWeaponFit(float DeltaTime)
+ 	if (Off < CrossBodyWeaponAngle)
+ 	{
+ 		WeaponFitPasses = 4;
+-		SaveWeaponFit(CurrentWeapon->GetName(), WeaponFitRotation);
+ 		return;
+ 	}
+ 
+@@ -1906,22 +1858,32 @@ bool UFortnitePortingCharacterComponent::EquipWeapon(UFortnitePortingWeaponData*
+ 	}
+ 
+ 	CurrentWeapon = Weapon;
+-	WeaponFitRotation = LoadWeaponFit(Weapon->GetName());
+-	bWeaponFitKnown = !WeaponFitRotation.Equals(FQuat::Identity, 1e-4f);
++	// The fit and the learned grip are found again on every equip: a fit saved while the hold pose was not playing (an older build did
++	// that) turned the barrel sideways for good, on every launch
++	WeaponFitRotation = FQuat::Identity;
++	bWeaponFitKnown = false;
+ 	WeaponFitPasses = 0;
+ 	WeaponFitSettle = 0.0f;
+-	bLeftHandOnWeaponValid = LoadWeaponGrip(Weapon->GetName(), LeftHandOnWeapon);
+-	bWeaponGripSaved = bLeftHandOnWeaponValid;
++	bLeftHandOnWeaponValid = false;
++	bWeaponGripSaved = false;
+ 	WeaponGripSettle = 0.0f;
+ 	CurrentWeaponIndex = Weapons.IndexOfByKey(Weapon);
+ 	AmmoInMagazine = Weapon->MagazineSize;
+ 	FireCooldown = 0.25f;
+ 	ReloadRemaining = 0.0f;
+ 
+-	ActiveWeaponMontage = Weapon->GetEquipMontage(SkeletonProfile);
+-	if (!IsUsableMontage(ActiveWeaponMontage) || PlayMontage(ActiveWeaponMontage) <= 0.0f)
++	UE_LOG(LogFortnitePortingRuntime, Log, TEXT("%s equipped on %s (profile %s): hold %s, jog %s, reload %s, equip %s, attached to %s%s"),
++		*Weapon->GetName(), *GetOwner()->GetName(), *SkeletonProfile.ToString(),
++		*GetNameSafe(Weapon->GetHoldMontage(SkeletonProfile)), *GetNameSafe(Weapon->GetJogMontage(SkeletonProfile)),
++		*GetNameSafe(Weapon->GetReloadMontage(SkeletonProfile)), *GetNameSafe(Weapon->GetEquipMontage(SkeletonProfile)),
++		Spawned ? *Spawned->GetAttachParentSocketName().ToString() : TEXT("(none)"), WeaponDriverBone.IsNone() ? TEXT("") : TEXT(" (driven by the weapon rig)"));
++
++	ActiveWeaponMontage = ResolveWeaponMontage(Weapon->GetEquipMontage(SkeletonProfile), false);
++	bActiveMontageIsEquip = ActiveWeaponMontage != nullptr;
++	if (ActiveWeaponMontage == nullptr || PlayMontage(ActiveWeaponMontage) <= 0.0f)
+ 	{
+ 		ActiveWeaponMontage = nullptr;
++		bActiveMontageIsEquip = false;
+ 		PlayHoldMontage();
+ 	}
+ 
+@@ -1942,8 +1904,9 @@ void UFortnitePortingCharacterComponent::UnequipWeapon()
+ 		return;
+ 	}
+ 
+-	if (UAnimInstance* AnimInstance = GetAnimInstance())
++	if (GetAnimInstance() != nullptr)
+ 	{
++		StopWeaponPoseMontages(0.2f);
+ 		for (UAnimMontage* Montage : { CurrentWeapon->GetHoldMontage(SkeletonProfile), CurrentWeapon->GetEquipMontage(SkeletonProfile), ActiveWeaponMontage.Get() })
+ 		{
+ 			if (Montage != nullptr)
+@@ -1956,6 +1919,7 @@ void UFortnitePortingCharacterComponent::UnequipWeapon()
+ 	DestroyWeaponVisuals();
+ 	CurrentWeapon = nullptr;
+ 	ActiveWeaponMontage = nullptr;
++	bActiveMontageIsEquip = false;
+ 	ReloadRemaining = 0.0f;
+ }
+ 
+@@ -2004,20 +1968,124 @@ void UFortnitePortingCharacterComponent::CycleWeapon()
+ 
+ void UFortnitePortingCharacterComponent::PlayHoldMontage()
+ {
+-	if (CurrentWeapon != nullptr && IsUsableMontage(CurrentWeapon->GetHoldMontage(SkeletonProfile)))
++	UAnimMontage* Hold = CurrentWeapon ? ResolveWeaponMontage(CurrentWeapon->GetHoldMontage(SkeletonProfile), true) : nullptr;
++	if (Hold != nullptr && PlayMontage(Hold) > 0.0f)
+ 	{
+-		UAnimMontage* Hold = CurrentWeapon->GetHoldMontage(SkeletonProfile);
+-		// A weapon hold is a single pose a few hundredths of a second long: played as it is it ends before its blend in is over, and
+-		// restarting it every frame kept the arms half way between the locomotion and the pose. It is held on its frame instead.
+-		if (Hold->GetPlayLength() < 0.5f)
+-		{
+-			HoldLastFrame(Hold);
+-		}
+-		else
++		ActiveHoldMontage = Hold;
++	}
++}
++
++FName UFortnitePortingCharacterComponent::WeaponSlotName() const
++{
++	static const FName UpperBodySlot(TEXT("UpperBody"));
++	static const FName DefaultSlot(TEXT("DefaultSlot"));
++	return bUpperBodySlotBroken ? DefaultSlot : UpperBodySlot;
++}
++
++UAnimMontage* UFortnitePortingCharacterComponent::ResolveWeaponMontage(UAnimMontage* Source, bool bLoop)
++{
++	if (!IsUsableMontage(Source))
++	{
++		return nullptr;
++	}
++
++	if (!bLoop && !bUpperBodySlotBroken)
++	{
++		// Fire, reload and draw animations play as imported, on the UpperBody slot
++		return Source;
++	}
++
++	// A hold pose is two frames long (0.034 s): as an asset it ended before its blend in was over, and whether it looped depended on the
++	// importer version. A transient copy that loops for hours plays like any other montage and never has to be frozen or restarted.
++	const FName Slot = WeaponSlotName();
++	const int32 LoopCount = bLoop ? 1000000 : 1;
++	if (const TObjectPtr<UAnimMontage>* Found = WeaponMontageCopies.Find(Source))
++	{
++		UAnimMontage* Copy = Found->Get();
++		if (Copy && Copy->SlotAnimTracks.Num() > 0 && Copy->SlotAnimTracks[0].SlotName == Slot
++			&& Copy->SlotAnimTracks[0].AnimTrack.AnimSegments.Num() > 0 && Copy->SlotAnimTracks[0].AnimTrack.AnimSegments[0].LoopingCount == LoopCount)
+ 		{
+-			PlayMontage(Hold);
++			return Copy;
+ 		}
+ 	}
++
++	if (Source->SlotAnimTracks.IsEmpty() || Source->SlotAnimTracks[0].AnimTrack.AnimSegments.IsEmpty())
++	{
++		return nullptr;
++	}
++	UAnimSequenceBase* Sequence = Source->SlotAnimTracks[0].AnimTrack.AnimSegments[0].GetAnimReference();
++	if (Sequence == nullptr)
++	{
++		return nullptr;
++	}
++
++	const float BlendIn = FMath::Max(Source->BlendIn.GetBlendTime(), 0.15f);
++	const float BlendOut = FMath::Max(Source->BlendOut.GetBlendTime(), 0.15f);
++	UAnimMontage* Copy = UAnimMontage::CreateSlotAnimationAsDynamicMontage(Sequence, Slot, BlendIn, BlendOut, 1.0f, LoopCount);
++	if (Copy == nullptr)
++	{
++		return Source;
++	}
++	WeaponMontageCopies.Add(Source, Copy);
++	return Copy;
++}
++
++void UFortnitePortingCharacterComponent::StopWeaponPoseMontages(float BlendOutTime)
++{
++	if (ActiveHoldMontage != nullptr)
++	{
++		StopMontage(ActiveHoldMontage, BlendOutTime);
++		ActiveHoldMontage = nullptr;
++	}
++	if (ActiveJogMontage != nullptr)
++	{
++		StopMontage(ActiveJogMontage, BlendOutTime);
++		ActiveJogMontage = nullptr;
++	}
++}
++
++void UFortnitePortingCharacterComponent::CheckUpperBodySlot(float DeltaTime, UAnimInstance* AnimInstance)
++{
++	// The generated Anim Blueprint feeds the UpperBody slot into a layered blend from spine_01. If that part of the graph is missing or
++	// not wired (a hand edited or half upgraded blueprint) the hold pose plays but never reaches the mesh: the arms keep the unarmed
++	// locomotion while the weapon hangs from an unanimated weapon_r. Once that is proven, every weapon montage goes full body instead.
++	if (bUpperBodySlotChecked || AnimInstance == nullptr)
++	{
++		return;
++	}
++
++	static const FName UpperBodySlot(TEXT("UpperBody"));
++	static const FName DefaultSlot(TEXT("DefaultSlot"));
++	UAnimMontage* Pose = ActiveHoldMontage ? ActiveHoldMontage.Get() : ActiveJogMontage.Get();
++	// A full body montage in DefaultSlot (emote, mantle, slide) legitimately stops updating everything above it: not a verdict
++	const bool bMeasurable = Pose != nullptr && AnimInstance->Montage_IsPlaying(Pose) && AnimInstance->GetSlotMontageGlobalWeight(UpperBodySlot) >= 0.9f
++		&& AnimInstance->GetSlotMontageGlobalWeight(DefaultSlot) < 0.01f && ActiveEmoteMontage == nullptr && !bMantling && !bSliding && !bGliding
++		&& CurrentVehicle == nullptr && !bLobbyIdle;
++	if (!bMeasurable)
++	{
++		UpperBodySlotSettled = 0.0f;
++		return;
++	}
++
++	UpperBodySlotSettled += DeltaTime;
++	if (UpperBodySlotSettled < 0.4f)
++	{
++		return;
++	}
++
++	bUpperBodySlotChecked = true;
++	if (AnimInstance->GetSlotNodeGlobalWeight(UpperBodySlot) > 0.01f)
++	{
++		return;
++	}
++
++	bUpperBodySlotBroken = true;
++	UE_LOG(LogFortnitePortingRuntime, Error,
++		TEXT("%s: %s plays the weapon pose on the UpperBody slot, but that slot never reaches the final pose. Weapon animations go full body for now; "
++			"run FP.UpgradeAnimBlueprints in the editor (or send the skin again) to rebuild the upper body layer of the Anim Blueprint."),
++		*GetOwner()->GetName(), *GetNameSafe(AnimInstance->GetClass()));
++	StopWeaponPoseMontages(0.1f);
++	WeaponMontageCopies.Empty();
+ }
+ 
+ bool UFortnitePortingCharacterComponent::FireWeapon()
+@@ -2155,6 +2223,7 @@ void UFortnitePortingCharacterComponent::FireFX(const FVector& Direction, const
+ 	if (UAnimMontage* Fire = CurrentWeapon->GetFireMontage(SkeletonProfile); IsUsableMontage(Fire) && PlayMontage(Fire) > 0.0f)
+ 	{
+ 		ActiveWeaponMontage = Fire;
++		bActiveMontageIsEquip = false;
+ 	}
+ 
+ 	if (WeaponActor)
+@@ -2229,12 +2298,13 @@ float UFortnitePortingCharacterComponent::ReloadFX()
+ 		return Duration;
+ 	}
+ 
+-	if (UAnimMontage* Reload = CurrentWeapon->GetReloadMontage(SkeletonProfile); IsUsableMontage(Reload))
++	if (UAnimMontage* Reload = ResolveWeaponMontage(CurrentWeapon->GetReloadMontage(SkeletonProfile), false))
+ 	{
+ 		const float Length = PlayMontage(Reload);
+ 		if (Length > 0.0f)
+ 		{
+ 			ActiveWeaponMontage = Reload;
++			bActiveMontageIsEquip = false;
+ 			Duration = Length;
+ 		}
+ 	}
+@@ -2290,11 +2360,9 @@ void UFortnitePortingCharacterComponent::TickWeapon(float DeltaTime)
+ 		SetPickaxeVisible(!bHeldHidden && !bGliding && ActiveEmoteMontage == nullptr);
+ 		if (bHeldHidden && CurrentWeapon)
+ 		{
+-			if (UAnimMontage* Hold = CurrentWeapon->GetHoldMontage(SkeletonProfile))
+-			{
+-				StopMontage(Hold, 0.12f);
+-			}
++			StopWeaponPoseMontages(0.12f);
+ 			ActiveWeaponMontage = nullptr;
++			bActiveMontageIsEquip = false;
+ 		}
+ 	}
+ 
+@@ -2308,6 +2376,7 @@ void UFortnitePortingCharacterComponent::TickWeapon(float DeltaTime)
+ 	if (ActiveWeaponMontage && !AnimInstance->Montage_IsPlaying(ActiveWeaponMontage))
+ 	{
+ 		ActiveWeaponMontage = nullptr;
++		bActiveMontageIsEquip = false;
+ 	}
+ 
+ 	if (ActiveWeaponMontage != nullptr)
+@@ -2315,9 +2384,11 @@ void UFortnitePortingCharacterComponent::TickWeapon(float DeltaTime)
+ 		return;
+ 	}
+ 
++	CheckUpperBodySlot(DeltaTime, AnimInstance);
++
+ 	// Running with the weapon up: the weapon's own jog plays on the upper body, so the arms move with the stride. The hold pose is one frame
+ 	// and kept the arms stiff while the legs ran. Standing still, aiming or any fire / reload / equip brings the hold pose back.
+-	if (UAnimMontage* Jog = CurrentWeapon->GetJogMontage(SkeletonProfile); IsUsableMontage(Jog))
++	if (UAnimMontage* Jog = ResolveWeaponMontage(CurrentWeapon->GetJogMontage(SkeletonProfile), true))
+ 	{
+ 		const ACharacter* Runner = GetCharacter();
+ 		const bool bRunning = Runner != nullptr && Runner->GetVelocity().Size2D() > 60.0f && !Runner->GetCharacterMovement()->IsFalling()
+@@ -2326,13 +2397,19 @@ void UFortnitePortingCharacterComponent::TickWeapon(float DeltaTime)
+ 		{
+ 			if (!AnimInstance->Montage_IsPlaying(Jog))
+ 			{
+-				PlayMontage(Jog);
++				// Same slot group as the hold pose: starting the jog blends the hold out
++				if (PlayMontage(Jog) > 0.0f)
++				{
++					ActiveJogMontage = Jog;
++					ActiveHoldMontage = nullptr;
++				}
+ 			}
+ 			return;
+ 		}
+ 		if (AnimInstance->Montage_IsPlaying(Jog))
+ 		{
+ 			StopMontage(Jog, 0.2f);
++			ActiveJogMontage = nullptr;
+ 		}
+ 	}
+ 
+@@ -2343,12 +2420,11 @@ void UFortnitePortingCharacterComponent::TickWeapon(float DeltaTime)
+ 		return;
+ 	}
+ 
+-	UAnimMontage* Hold = CurrentWeapon->GetHoldMontage(SkeletonProfile);
+-	if (IsUsableMontage(Hold))
++	if (UAnimMontage* Hold = ResolveWeaponMontage(CurrentWeapon->GetHoldMontage(SkeletonProfile), true))
+ 	{
+ 		if (!AnimInstance->Montage_IsPlaying(Hold))
+ 		{
+-			PlayHoldMontage();      // a one frame pose is held on that frame (see PlayHoldMontage)
++			PlayHoldMontage();
+ 		}
+ 	}
+ 	else if (UAnimMontage* Equip = CurrentWeapon->GetEquipMontage(SkeletonProfile); IsUsableMontage(Equip) && !AnimInstance->Montage_IsActive(Equip))
+diff --git a/Unreal/Arena/Plugins/FortnitePorting/Source/FortnitePortingRuntime/Public/FortnitePortingCharacterComponent.h b/Unreal/Arena/Plugins/FortnitePorting/Source/FortnitePortingRuntime/Public/FortnitePortingCharacterComponent.h
+index 34a644a..99425b1 100644
+--- a/Unreal/Arena/Plugins/FortnitePorting/Source/FortnitePortingRuntime/Public/FortnitePortingCharacterComponent.h
++++ b/Unreal/Arena/Plugins/FortnitePorting/Source/FortnitePortingRuntime/Public/FortnitePortingCharacterComponent.h
+@@ -894,6 +894,34 @@ private:
+ 	void StopEmoteSounds();
+ 	void DestroyWeaponVisuals();
+ 	void PlayHoldMontage();
++
++	/**
++	 * The montage actually played for a weapon animation. Hold / jog poses come as montages a few hundredths of a second long
++	 * whose looping depends on how they were imported, so a transient copy that loops for hours is played instead (bLoop); when
++	 * the Anim Blueprint turns out to have no working UpperBody slot every weapon montage is copied onto DefaultSlot (full body).
++	 */
++	UAnimMontage* ResolveWeaponMontage(UAnimMontage* Source, bool bLoop);
++	FName WeaponSlotName() const;
++	void CheckUpperBodySlot(float DeltaTime, UAnimInstance* AnimInstance);
++	void StopWeaponPoseMontages(float BlendOutTime);
++
++	/** Transient copies made by ResolveWeaponMontage, by source montage */
++	UPROPERTY(Transient)
++	TMap<TObjectPtr<UAnimMontage>, TObjectPtr<UAnimMontage>> WeaponMontageCopies;
++
++	UPROPERTY(Transient)
++	TObjectPtr<UAnimMontage> ActiveHoldMontage;
++
++	UPROPERTY(Transient)
++	TObjectPtr<UAnimMontage> ActiveJogMontage;
++
++	/** ActiveWeaponMontage is the draw animation (the left hand may already ride the weapon's grip socket) */
++	bool bActiveMontageIsEquip = false;
++
++	/** Set once the UpperBody slot is proven not to reach the final pose (see CheckUpperBodySlot) */
++	bool bUpperBodySlotBroken = false;
++	bool bUpperBodySlotChecked = false;
++	float UpperBodySlotSettled = 0.0f;
+ 	void FinishExitVehicle();
+ 	bool EnterVehicleAs(AFortnitePortingVehicle* Vehicle, bool bPassenger);
+ 
+diff --git a/docs/ARREGLO_ARMAS.md b/docs/ARREGLO_ARMAS.md
+new file mode 100644
+index 0000000..ad19f5c
+--- /dev/null
++++ b/docs/ARREGLO_ARMAS.md
+@@ -0,0 +1,43 @@
++# Arreglo: escopeta / rifle / francotirador en la mano, correr y recargar
++
++Síntoma: al equipar un arma de dos manos la skin seguía con los brazos de la locomoción sin arma (brazos colgando o
++balanceándose al correr), el arma quedaba cruzada a la altura de la cadera y la recarga movía las manos lejos del arma.
++
++## Qué ocurría
++
++Las poses de sujeción de Fortnite (`Pose_Rifle_NonTargeted_CMF`, `Shotgun_StraightGrip_NonTargeted_CMM`...) duran dos
++fotogramas (0,034 s). El componente las reproducía como montaje y las congelaba a velocidad 0 (`HoldLastFrame`), lo que
++dependía de que el asset del montaje tuviera el bucle y `bEnableAutoBlendOut` exactamente como esperaba el código y, para
++ello, modificaba los assets en memoria durante el juego. Además el giro del arma (`WeaponFit`) y la posición de la mano
++izquierda se guardaban en `GameUserSettings.ini` y se volvían a aplicar en cada equipamiento: un giro calculado con la pose
++rota quedaba fijo para siempre.
++
++## Cambios (`Plugins/FortnitePorting`)
++
++### Runtime (`FortnitePortingCharacterComponent`)
++
++- `ResolveWeaponMontage`: la pose de sujeción y el trote con arma se reproducen como **montajes transitorios en bucle**
++  creados con `CreateSlotAnimationAsDynamicMontage` a partir de la animación importada. Ya no se congelan ni se reinician
++  cada frame, y no se toca ningún asset.
++- `CheckUpperBodySlot`: 0,4 s después de que la pose esté al 100 % en el slot `UpperBody`, comprueba que ese slot llega a la
++  pose final del Anim Blueprint (`GetSlotNodeGlobalWeight`). Si el ABP no lo tiene bien cableado, escribe un error en el
++  Output Log y, desde ese momento, reproduce los montajes del arma en `DefaultSlot` (cuerpo completo) para que al menos se
++  vea bien mientras se repara el ABP.
++- Se elimina la persistencia en `.ini` del giro del arma y del agarre de la mano izquierda. Se recalculan en cada equip.
++- Al equipar se escribe una línea de log (`LogFortnitePortingRuntime`) con los montajes elegidos, el perfil y el hueso de
++  enganche, para diagnosticar sin abrir el editor.
++
++### Editor (`AnimBlueprintGenerator`, `FortnitePortingBuilder`)
++
++- `RepairUpperBodyLayer`: comprueba en cada `ABP_<Skin>` que `UseCachedPose -> UpperBody slot -> Layered blend per bone
++  (spine_01, peso 1)` existe y está conectado; si no, borra esa parte y la vuelve a construir. Se ejecuta con
++  `FP.UpgradeAnimBlueprints` y cada vez que se envía un arma desde Fortnite Porting.
++- El peso de la capa de armas se fija explícitamente a 1 en el pin.
++
++## Qué hacer
++
++1. Recompilar el proyecto (los dos módulos del plugin cambian: `FortnitePorting` y `FortnitePortingRuntime`).
++2. En el editor, consola: `FP.UpgradeAnimBlueprints`. Guardar los ABP que marque como modificados.
++3. Probar con la skin: equipar escopeta/rifle/francotirador, correr y recargar.
++4. Si algo sigue mal, buscar en el Output Log `LogFortnitePortingRuntime` las líneas `equipped on` y cualquier error sobre
++   `UpperBody`, y pasarlas junto con una captura.
+-- 
+2.43.0
+
